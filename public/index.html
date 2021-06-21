@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <title>Oh Hell</title>
+        <link href="tailwind.css" rel="stylesheet">
+        <style>
+            * { padding: 0; margin: 0; }
+            canvas { background: #eee; display: block; margin: 0 auto; }
+        </style>
+        <script src="/socket.io/socket.io.js"></script>
+    </head>
+    <body>
+        <div class="fixed inset-0 flex items-center justify-center" style="display:none;" id="mainMenuDiv">
+            <div class="bg-white bg-opacity-70 max-w-sm w-full h-1/2 p-6 rounded-3xl border-black border text-center">
+                <h1 class="text-6xl font-bold mt-7">Oh Hell</h1>
+                <button class="bg-white rounded-lg border border-black w-1/2 h-10 font-bold text-md mt-28 hover:bg-gray-300" id="mpButton">Multiplayer</button>
+            </div>
+        </div>
+
+        <div class="fixed inset-0 flex items-center justify-center" style="display:none;" id="loginMenuDiv">
+            <div class="bg-white bg-opacity-70 max-w-sm w-full h-1/3 p-6 rounded-3xl border-black border text-center">
+                <div class="mt-5">
+                    <p class="font-bold" style="float:left;">Username:</p>
+                    <input type="text" autocomplete="off" class="bg-white rounded-lg border border-black w-2/3 h-8 text-sm p-2" style="float:right;" id="lmUsername"></input>
+                </div>
+                <button class="bg-white rounded-lg border border-black w-1/2 h-10 font-bold text-md mt-20 hover:bg-gray-300" id="lmConnect">Login</button>
+                <button class="bg-white rounded-lg border border-black w-1/2 h-10 font-bold text-md mt-10 hover:bg-gray-300" id="lmBack">Back</button>
+            </div>
+        </div>
+
+        <div class="fixed inset-0 flex items-center justify-center" style="display:none;" id="preGameDiv">
+            <div class="bg-white bg-opacity-70 max-w-md w-full h-2/5 p-6 rounded-3xl border-black border text-center">
+                <div class="w-full mt-2" style="display:table;">
+                    <div class="w-full" style="display:table-row;">
+                        <p class="font-bold w-5" style="display:table-cell;">Name:</p>
+                        <input type="text" autocomplete="off" class="bg-white rounded-lg border border-black w-3/5 h-8 text-sm p-2 mr-2" style="display:table-cell;" id="igName"></input>
+                        <button class="bg-white rounded-lg border border-black w-1/3 h-8 font-bold text-sm hover:bg-gray-300" style="display:table-cell;" id="igChangeName">Change name</button>
+                    </div>
+                </div>
+                <div class="w-full mt-5" style="display:table;height:1;">
+                    <div class="w-full" style="display:table-row;">
+                        <p class="font-bold w-1/2 h-8 text-right" style="display:table-cell;">Join as kibitzer:</p>
+                        <input type="checkbox" class="bg-white rounded-3xl border border-black w-5 h-5" style="display:table-cell;" id="igKibitzer"></input>
+                    </div>
+                    <div class="w-full h-10" style="display:table-row;"></div>
+                    <div class="w-full" style="display:table-row;">
+                        <p class="font-bold w-1/2 h-8 text-right" style="display:table-cell;">Robots:</p>
+                        <input type="number" min="0" max="10" value="0" class="bg-white rounded-3xl border border-black w-14 h-6 p-2" style="display:table-cell;" id="igRobots"></input>
+                    </div>
+                    <div class="w-full" style="display:table-row;">
+                        <p class="font-bold w-1/2 h-8 text-right" style="display:table-cell;">Double deck:</p>
+                        <input type="checkbox" class="bg-white rounded-3xl border border-black w-5 h-5" style="display:table-cell;" id="igDoubleDeck"></input>
+                    </div>
+                    <div class="w-full" style="display:table-row;">
+                        <p class="font-bold w-1/2 h-8 text-right" style="display:table-cell;">Teams:</p>
+                        <input type="checkbox" class="bg-white rounded-3xl border border-black w-5 h-5" style="display:table-cell;" id="igTeams"></input>
+                    </div>
+                </div>
+                <div class="w-full mt-12" style="display:table;">
+                    <div class="w-full" style="display:table-row;">
+                        <button class="bg-white rounded-lg border border-black w-2/5 h-10 font-bold text-md hover:bg-gray-300 mr-2" style="display:table-cell;" id="igStart">Start</button>
+                        <button class="bg-white rounded-lg border border-black w-2/5 h-10 font-bold text-md hover:bg-gray-300 ml-2" style="display:table-cell;" id="igBack">Leave table</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="fixed inset-0 flex items-end justify-left" style="display:none;" id="inGameDiv">
+            <div class="p-0" style="width:100px;" id="igLeftDiv">
+                <button class="bg-white rounded-lg border border-black w-full h-8 font-bold text-md hover:bg-gray-300 ml-3 mb-3" id="igClaim">Claim</button>
+                <button class="bg-white rounded-lg border border-black w-full h-8 font-bold text-md hover:bg-gray-300 ml-3 mb-3" id="igEnd">End game</button>
+            </div>
+            <div class="p-0" id="igSpacerDiv"></div>
+            <div class="p-0" id="igChatDiv">
+                <textarea class="bg-white rounded-lg border border-black w-full text-sm p-2 mb-3" readonly="true" style="resize:none;overflow-y:scroll;" id="igChatArea"></textarea>
+                <input type="text" autocomplete="off" class="bg-white rounded-lg border border-black w-full h-8 text-sm p-2 mb-3" style="display:table-cell;" id="igChatField"></input>
+            </div>
+        </div>
+
+        <canvas id="canvas"></canvas>
+
+        <div style="display:none;">
+        	<img id="background" src="resources/tableimage.png">
+            <img id="deckimg" src="resources/deck2.png">
+            <img id="deckimgsmall" src="resources/deck2small.png">
+        </div>
+
+        <script src="main.js"></script>
+    </body>
+</html>
