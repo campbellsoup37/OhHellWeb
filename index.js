@@ -1,6 +1,10 @@
+var debug = false;
+
 var express = require("express");
 var socket = require("socket.io");
+var fs = require('fs');
 var ai = require('./ai');
+var ml = require('./ml');
 
 // App setup
 var app = express();
@@ -14,40 +18,424 @@ app.use(express.static("public"));
 
 // Socket setup
 var io = socket(server);
-var playerDict = {};
+var userDict = {};
+var gameDict = {};
+
+// constants
+var gameExpirationTime = 1000 * 10;
+var robotNames = fs.readFileSync('./misc/firstnames.txt', 'utf8').split('\r\n');
+
+function addUser(user) {
+    userDict[user.socket.id] = user;
+    user.confirmLogin();
+}
+
+function removeUser(user) {
+    delete userDict[user.socket.id];
+    user.confirmLogout();
+}
 
 io.on("connection", function (socket) {
-    console.log("connected", socket.id);
+    console.log(`socket ${socket.id} connected at address ${socket.handshake.address}.`);
 
-    socket.on("join", function (data) {
-        console.log("joined", data.id, socket.id);
-        let player = new HumanPlayer(socket);
-        joinPlayer(player, data.id);
+    socket.on("login", function (data) {
+        let user = new User(socket, data.id);
+        addUser(user);
+        console.log(`user ${user.id} at socket ${socket.id}.`);
+    });
+    socket.on("logout", function () {
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} tried to logout, but they are not in the user dict.`);
+            return;
+        }
+
+        console.log("logout", user.id);
+        removeUser(user);
     });
     socket.on("disconnect", function () {
-        console.log("disconnected", socket.id);
-        let player = playerDict[socket.id];
-        if (player) {
-            disconnectPlayer(playerDict[socket.id], false);
-            delete playerDict[socket.id];
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`socket ${socket.id} disconnected.`);
+            return;
         }
+
+        console.log(`user ${user.id} disconnected.`);
+
+        if (user.player) {
+            user.game.disconnectPlayer(user, false);
+        }
+        removeUser(user);
+    });
+
+    socket.on('gamelist', () => {
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} requested the game list, but they are not in the user dict.`);
+            return;
+        }
+
+        user.sendGameList();
+    });
+
+    socket.on('creatempgame', () => {
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} tried to create a multiplayer game, but they are not in the user dict.`);
+            return;
+        }
+
+        let game = new OhHellGame(true);
+        gameDict[game.id] = game;
+        game.joinPlayer(user);
+
+        console.log(`new multiplayer game: ${game.id}, hosted by ${user.id}.`);
+    });
+    socket.on('createspgame', () => {
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} tried to create a single player game, but they are not in the user dict.`);
+            return;
+        }
+
+        let game = new OhHellGame(false);
+        gameDict[game.id] = game;
+        game.joinPlayer(user);
+
+        console.log(`new single player game: ${game.id}, hosted by ${user.id}.`);
+    });
+    socket.on('joinmpgame', id => {
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} tried to join game ${id}, but they are not in the user dict.`);
+            return;
+        }
+
+        let game = gameDict[id];
+
+        if (game === undefined) {
+            console.log(`ERROR: user ${user.id} tried to join game ${id}, but that game does not exist.`);
+            return;
+        }
+
+        game.joinPlayer(user);
+
+        console.log(`${user.id} joined game ${game.id}.`);
+    });
+    socket.on('leavegame', () => {
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} tried to leave game, but they are not in the user dict.`);
+            return;
+        }
+
+        let game = user.game;
+
+        if (game === undefined) {
+            console.log(`ERROR: user ${user.id} tried to join game, but they are not in a game.`);
+            return;
+        }
+
+        user.game.disconnectPlayer(user);
+
+        console.log(`${user.id} left game ${game.id}.`);
+    });
+
+    socket.on('player', function (data) {
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} tried to update player, but they are not in the user dict.`);
+            return;
+        }
+
+        let game = user.game;
+
+        if (!user.game) {
+            console.log(`ERROR: user ${user.id} tried to update player, but they are not in a game.`);
+            return;
+        }
+
+        game.players.updatePlayer(data);
     });
     socket.on('options', function (data) {
-        core.updateOptions(data);
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} tried to update options, but they are not in the user dict.`);
+            return;
+        }
+
+        let game = user.game;
+
+        if (!user.game) {
+            console.log(`ERROR: user ${user.id} tried to update options, but they are not in a game.`);
+            return;
+        }
+
+        game.core.updateOptions(data);
     });
     socket.on('start', function () {
-        core.startGame();
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} tried to start a game, but they are not in the user dict.`);
+            return;
+        }
+
+        let game = user.game;
+
+        if (!user.game) {
+            console.log(`ERROR: user ${user.id} tried to start a game, but they are not in a game.`);
+            return;
+        }
+
+        game.core.startGame();
+    });
+    socket.on('end', function () {
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} tried to end a game, but they are not in the user dict.`);
+            return;
+        }
+
+        let game = user.game;
+
+        if (!user.game) {
+            console.log(`ERROR: user ${user.id} tried to end a game, but they are not in a game.`);
+            return;
+        }
+
+        game.core.endGame(user.player.getIndex());
     });
     socket.on('bid', function (data) {
-        core.incomingBid(playerDict[socket.id].getIndex(), data.bid);
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} tried to bid, but they are not in the user dict.`);
+            return;
+        }
+
+        let game = user.game;
+
+        if (!user.game) {
+            console.log(`ERROR: user ${user.id} tried to bid, but they are not in a game.`);
+            return;
+        }
+
+        game.core.incomingBid(user.player.getIndex(), data.bid);
+        user.player.readiedBid = undefined;
     });
     socket.on('play', function (data) {
-        core.incomingPlay(playerDict[socket.id].getIndex(), new Card(data.card.num, data.card.suit));
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} tried to play, but they are not in the user dict.`);
+            return;
+        }
+
+        let game = user.game;
+
+        if (!user.game) {
+            console.log(`ERROR: user ${user.id} tried to play, but they are not in a game.`);
+            return;
+        }
+
+        game.core.incomingPlay(user.player.getIndex(), new Card(data.card.num, data.card.suit));
+        user.player.readiedPlay = undefined;
     });
     socket.on('chat', function (data) {
-        core.incomingChat(playerDict[socket.id].getIndex(), data);
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} tried to chat, but they are not in the user dict.`);
+            return;
+        }
+
+        let game = user.game;
+
+        if (!user.game) {
+            console.log(`ERROR: user ${user.id} tried to chat, but they are not in a game.`);
+            return;
+        }
+
+        game.core.incomingChat(user.player.getIndex(), data);
+    });
+    socket.on('replacewithrobot', function (index) {
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} tried to replace with robot, but they are not in the user dict.`);
+            return;
+        }
+
+        let game = user.game;
+
+        if (!user.game) {
+            console.log(`ERROR: user ${user.id} tried to replace with robot, but they are not in a game.`);
+            return;
+        }
+
+        game.core.replaceWithRobot(user.player.getIndex(), index);
+    });
+    socket.on('poke', function (index) {
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} tried to poke someone, but they are not in the user dict.`);
+            return;
+        }
+
+        let game = user.game;
+
+        if (!user.game) {
+            console.log(`ERROR: user ${user.id} tried to poke someone, but they are not in a game.`);
+            return;
+        }
+
+        game.core.poke(index);
+    });
+    socket.on('claim', function () {
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} tried to claim, but they are not in the user dict.`);
+            return;
+        }
+
+        let game = user.game;
+
+        if (!user.game) {
+            console.log(`ERROR: user ${user.id} tried to claim, but they are not in a game.`);
+            return;
+        }
+
+        game.core.incomingClaim(user.player.getIndex());
+    });
+    socket.on('claimresponse', function (accept) {
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            console.log(`ERROR: socket ${socket.id} tried to respond to a claim, but they are not in the user dict.`);
+            return;
+        }
+
+        let game = user.game;
+
+        if (!user.game) {
+            console.log(`ERROR: user ${user.id} tried to respond to a claim, but they are not in a game.`);
+            return;
+        }
+
+        game.core.respondToClaim(user.player.getIndex(), accept);
     });
 });
+
+// User
+class User {
+    constructor(socket, id) {
+        this.socket = socket;
+        this.id = id;
+        this.player = undefined;
+        this.game = undefined;
+    }
+
+    confirmLogin() {
+        this.socket.emit('loginconfirmed');
+    }
+
+    confirmLogout() {
+        this.socket.emit('logoutconfirmed');
+    }
+
+    kick() {
+        this.player = undefined;
+        this.game = undefined;
+
+        if (this.socket.connected) {
+            this.socket.emit('kick');
+        }
+    }
+
+    sendGameList() {
+        let time = new Date().getTime();
+        let expires = Object.values(gameDict).filter(g => g.shouldExpire(time));
+        expires.forEach(g => g.dispose());
+
+        let games = Object.values(gameDict).filter(g => g.public);
+        this.socket.emit('gamelist', {
+            games: games.map(g => g.toDict())
+        });
+    }
+}
+
+// Game
+class OhHellGame {
+    constructor(pub) {
+        this.id = new Date().getTime();
+        this.public = pub;
+        this.players = new PlayersList(this);
+        this.host = undefined;
+        this.core = new Core(this.players, this);
+    }
+
+    toDict() {
+        let inGame = this.core.state == CoreState.BIDDING || this.core.state == CoreState.PLAYING;
+        return {
+            id: this.id,
+            public: this.public,
+            type: 'Oh Hell',
+            host: this.host ? this.host.id : '',
+            players: this.players.players.filter(p => p.isHuman()).length,
+            state: inGame ? 'In game' : 'In lobby'
+        };
+    }
+
+    joinPlayer(user) {
+        let player = new HumanPlayer(user, this.core);
+        player.setName(user.id);
+
+        if (this.host === undefined) {
+            this.host = player;
+        }
+        player.setHost(this.host === player);
+
+        user.player = player;
+        user.game = this;
+
+        player.commandJoin(this.id);
+        this.players.addPlayer(player);
+    }
+
+    disconnectPlayer(user, kick) {
+        this.players.disconnectPlayer(user.player, kick);
+        user.kick();
+    }
+
+    startExpirationTimer() {
+        this.expiration = new Date().getTime() + gameExpirationTime;
+    }
+
+    stopExpirationTimer() {
+        this.expiration = undefined;
+    }
+
+    shouldExpire(time) {
+        return this.expiration && time >= this.expiration;
+    }
+
+    dispose() {
+        delete gameDict[this.id];
+    }
+}
 
 // Card and Deck
 class Card {
@@ -99,6 +487,34 @@ class Card {
         }
 
         return ans;
+    }
+
+    fromString(str) {
+        if (str[0] == 'T') {
+            this.num = 10;
+        } else if (str[0] == 'J') {
+            this.num = 11;
+        } else if (str[0] == 'Q') {
+            this.num = 12;
+        } else if (str[0] == 'K') {
+            this.num = 13;
+        } else if (str[0] == 'A') {
+            this.num = 14;
+        } else {
+            this.num = parseInt(str[0]);
+        }
+
+        if (str[1] == 'C') {
+            this.suit = 0;
+        } else if (str[1] == 'D') {
+            this.suit = 1;
+        } else if (str[1] == 'S') {
+            this.suit = 2;
+        } else if (str[1] == 'H') {
+            this.suit = 3;
+        }
+
+        return this;
     }
 
     toNumber() {
@@ -161,6 +577,10 @@ class Deck {
     }
 
     deal(N, h) {
+        if (N * h + 1 > 52 * this.D) {
+            console.log('ERROR: tried to deal ' + h + ' cards to ' + N + ' players.');
+        }
+
         let out = [];
 
         // Shuffle in place
@@ -186,6 +606,7 @@ class Deck {
 class Player {
     constructor() {
         this.kibitzer = false;
+        this.replacedByRobot = false;
     }
 
     toDict() {
@@ -195,6 +616,7 @@ class Player {
             human: this.human,
             host: this.host,
             disconnected: this.disconnected,
+            replacedByRobot: this.replacedByRobot,
             kibitzer: this.kibitzer,
             index: this.index,
             bid: this.bid,
@@ -203,6 +625,29 @@ class Player {
             score: this.score,
             trick: this.trick === undefined ? undefined : this.trick.toDict(),
             lastTrick: this.lastTrick === undefined ? undefined : this.lastTrick.toDict()
+        };
+    }
+
+    toPostGameDict() {
+        return {
+            id: this.id,
+            name: this.name,
+            index: this.index,
+            human: this.human,
+            hands: this.hands.map(h => h.map(c => c.toDict())),
+            bids: this.bids,
+            takens: this.takens,
+            scores: this.scores,
+            score: this.score,
+            plays: this.plays.map(r => r.map(c => c.toDict())),
+            wbProbs: this.wbProbs,
+            bidQs: this.bidQs,
+            makingProbs: this.makingProbs.map(r => r.map(t => t.map(pair => [pair[0].toDict(), pair[1]]))),
+            aiBids: this.aiBids,
+            diffs: this.diffs,
+            lucks: this.lucks,
+            hypoPointsLost: this.hypoPointsLost,
+            mistakes: this.mistakes
         };
     }
 
@@ -222,8 +667,8 @@ class Player {
         return this.id;
     }
 
-    setDisconnected(disc) {
-        this.disconnected = disc;
+    isHuman() {
+        return this.human;
     }
 
     isDisconnected() {
@@ -252,6 +697,10 @@ class Player {
 
     getIndex() {
         return this.index;
+    }
+
+    setStrategyModule(module) {
+        this.strategyModule = module;
     }
 
     setHand(hand) {
@@ -302,6 +751,16 @@ class Player {
         this.takens = [];
         this.scores = [];
         this.hands = [];
+        this.plays = [];
+
+        this.wbProbs = [];
+        this.bidQs = [];
+        this.makingProbs = [];
+        this.aiBids = [];
+        this.diffs = [];
+        this.lucks = [];
+        this.hypoPointsLost = [];
+        this.mistakes = [];
     }
 
     newRoundReset() {
@@ -310,6 +769,11 @@ class Player {
         this.bidded = false;
         this.trick = new Card();
         this.lastTrick = new Card();
+        this.acceptedClaim = false;
+        this.plays.push([]);
+
+        this.makingProbs.push([]);
+        this.roundMistakes = 0;
     }
 
     newTrickReset() {
@@ -317,10 +781,19 @@ class Player {
         this.trick = new Card();
     }
 
+    addHand(hand) {
+        this.hand = hand;
+        this.hands.push(hand.map(c => c));
+    }
+
     addBid(bid) {
         this.bid = bid;
         this.bidded = true;
         this.bids.push(bid);
+
+        let qs = this.bidQs[this.bidQs.length - 1];
+        let aiBid = this.aiBids[this.aiBids.length - 1];
+        this.hypoPointsLost.push(ai.pointsMean(qs, aiBid) - ai.pointsMean(qs, this.bid));
     }
 
     addPlay(card) {
@@ -330,6 +803,14 @@ class Player {
                 this.hand.splice(i, 1);
             }
         }
+
+        this.plays[this.plays.length - 1].push(card);
+
+        let roundProbs = this.makingProbs[this.makingProbs.length - 1];
+        let probs = roundProbs[roundProbs.length - 1];
+        let maxProb = Math.max(...probs.map(pair => pair[1]));
+        let myProb = probs.filter(pair => pair[0].matches(card))[0][1];
+        this.roundMistakes += maxProb < 0.0001 ? 0 : Math.min(maxProb / myProb - 1, 1);
     }
 
     incTaken() {
@@ -345,23 +826,76 @@ class Player {
         this.scores.push(this.score);
     }
 
+    addWbProb(p) {
+        this.wbProbs.push(p);
+    }
+
+    startBid(data) {
+        if (data.turn == this.index && !this.kibitzer) {
+            this.bidAsync();
+        }
+        this.commandBid(data);
+    }
+
+    async bidAsync() {
+        let bid = await this.strategyModule.makeBid();
+        this.bidReady(bid);
+    }
+
+    startPlay(data) {
+        if (data.turn == this.index && !this.kibitzer) {
+            this.playAsync();
+        }
+        this.commandPlay(data);
+    }
+
+    async playAsync() {
+        let card = await this.strategyModule.makePlay();
+        this.playReady(card);
+    }
+
+    addQs(qs) {
+        this.bidQs.push(qs);
+    }
+
+    addAiBid(bid) {
+        this.aiBids.push(bid);
+    }
+
+    addMakingProbs(probs) {
+        this.makingProbs[this.makingProbs.length - 1].push(probs);
+    }
+
+    addDiff(diff) {
+        this.diffs.push(diff);
+    }
+
+    addLuck(luck) {
+        this.lucks.push(luck);
+    }
+
     reconnect(player) {}
+
+    poke() {}
 
     commandGameState(data) {}
     commandAddPlayers(data) {}
     commandRemovePlayers(data) {}
     commandUpdatePlayers(data) {}
     commandStart() {}
+    commandBid(data) {}
+    bidReady(bid) {}
+    commandPlay(data) {}
+    playReady(card) {}
     commandDeal(data) {}
-    commandBid(date) {}
-    commandPlay(date) {}
     commandTrickWinner(data) {}
 }
 
 class PlayersList {
-    constructor() {
-        this.players = []
-        this.kibitzers = []
+    constructor(game) {
+        this.game = game;
+        this.players = [];
+        this.kibitzers = [];
     }
 
     toDict(index) {
@@ -390,14 +924,11 @@ class PlayersList {
     }
 
     emitAll(type, data) {
-        for (const player of this.players) {
-            if (player.human && player.socket.connected) {
-                player.socket.emit(type, data);
-            }
-        }
-        for (const kibitzer of this.kibitzers) {
-            if (kibitzer.human && kibitzer.socket.connected) {
-                kibitzer.socket.emit(type, data);
+        for (const list of [this.players, this.kibitzers]) {
+            for (const player of list) {
+                if (player.human && player.user.socket.connected) {
+                    player.user.socket.emit(type, data);
+                }
             }
         }
     }
@@ -407,14 +938,16 @@ class PlayersList {
         let reconnect = false;
         for (const p of this.players) {
             if (p.getId() == player.getId()) {
-                p.reconnect(player);
+                p.reconnect(player.user);
                 p.setDisconnected(false);
                 player = p;
 
                 let playerData = {players: [player.toDict()]};
-                for (const p1 of this.players) {
-                    if (p1 !== player) {
-                        p1.commandUpdatePlayers(playerData);
+                for (const list of [this.players, this.kibitzers]) {
+                    for (const p1 of list) {
+                        if (p1 !== player) {
+                            p1.commandUpdatePlayers(playerData);
+                        }
                     }
                 }
 
@@ -430,9 +963,11 @@ class PlayersList {
 
                 let playerData = {players: [player.toDict()]};
                 let allData = {players: this.players.map(p => p.toDict())};
-                for (const p of this.players) {
-                    if (p !== player) {
-                        p.commandAddPlayers(playerData);
+                for (const list of [this.players, this.kibitzers]) {
+                    for (const p of list) {
+                        if (p !== player) {
+                            p.commandAddPlayers(playerData);
+                        }
                     }
                 }
                 player.commandAddPlayers(allData);
@@ -447,8 +982,10 @@ class PlayersList {
             };
             player.commandAddPlayers(allData);
             player.commandStart();
-            player.commandGameState(core.toDict(player.isKibitzer() ? -1 : player.getIndex()));
+            player.commandGameState(this.core.toDict(player.isKibitzer() ? -1 : player.getIndex()));
         }
+
+        this.game.stopExpirationTimer();
     }
 
     addRobots(robots) {
@@ -461,39 +998,114 @@ class PlayersList {
         this.emitAll('addplayers', allData);
     }
 
+    attachStrategyModules(modules) {
+        for (let i = 0; i < modules.length; i++) {
+            this.players[i].setStrategyModule(modules[i]);
+            modules[i].setCoreAndPlayer(this.core, this.players[i]);
+        }
+    }
+
+    getRobots() {
+        return this.players.filter(p => !p.isHuman());
+    }
+
     disconnectPlayer(player, kick) {
         player.setDisconnected(true);
 
         if (player.isKibitzer()) {
             this.kibitzers = this.kibitzers.filter(p => p !== player);
-        } else if (core.state == CoreState.PREGAME || core.state == CoreState.POSTGAME) {
-            this.players = this.players.filter(p => p !== player);
-            for (let i = player.getIndex(); i < this.players.length; i++) {
-                this.players[i].setIndex(i);
-            }
-            let playerData = {indices: [player.getIndex()]};
-            for (const p of this.players) {
-                p.commandRemovePlayers(playerData);
+        } else if (this.core.state == CoreState.PREGAME || this.core.state == CoreState.POSTGAME) {
+            this.removePlayers([player]);
+
+            if (this.players.filter(p => p.isHuman()).length == 0) {
+                this.game.dispose();
             }
         } else {
             this.updatePlayers([player]);
+
+            if (this.players.filter(p => p.isHuman() && !p.isDisconnected()).length == 0) {
+                this.game.startExpirationTimer();
+            }
         }
 
-        if (host === player) {
-            host = undefined;
-            if (this.players.length > 0) {
-                host = this.players[0];
-                host.setHost(true);
-                this.updatePlayers([host]);
+        if (this.game.host === player) {
+            this.game.host = undefined;
+            for (const p of this.players) {
+                if (!p.isDisconnected() && p.isHuman()) {
+                    this.game.host = p;
+                    p.setHost(true);
+                    this.updatePlayers([p]);
+                }
+            }
+        }
+    }
+
+    removePlayers(players) {
+        this.players = this.players.filter(p => !players.includes(p));
+        for (let i = 0; i < this.players.length; i++) {
+            this.players[i].setIndex(i);
+        }
+        let playerData = {indices: players.map(p => p.getIndex())};
+        for (const list of [this.players, this.kibitzers]) {
+            for (const p of list) {
+                p.commandRemovePlayers(playerData);
             }
         }
     }
 
     updatePlayers(players) {
         let data = {players: players.map(p => p.toDict())};
-        for (const player of this.players) {
-            player.commandUpdatePlayers(data);
+        for (const list of [this.players, this.kibitzers]) {
+            for (const p of list) {
+                p.commandUpdatePlayers(data);
+            }
         }
+    }
+
+    updatePlayer(data) {
+        let player = undefined;
+        for (const p of this.players) {
+            if (p.id == data.id) {
+                player = p;
+                break;
+            }
+        }
+        if (!player) {
+            for (const p of this.kibitzers) {
+                if (p.id == data.id) {
+                    player = p;
+                    break;
+                }
+            }
+        }
+
+        if (!player.isKibitzer() && data.kibitzer) {
+            this.players = this.players.filter(p => p !== player);
+            this.kibitzers.push(player);
+            for (let i = player.getIndex(); i < this.players.length; i++) {
+                this.players[i].setIndex(i);
+            }
+            let playerData = {indices: [player.getIndex()]};
+            for (const list of [this.players, this.kibitzers]) {
+                for (const p of list) {
+                    p.commandRemovePlayers(playerData);
+                }
+            }
+        } else if (player.isKibitzer() && !data.kibitzer) {
+            this.kibitzers = this.kibitzers.filter(p => p !== player);
+            this.players.push(player);
+            player.setIndex(this.players.length - 1);
+            let playerData = {players: [player.toDict()]};
+            for (const list of [this.players, this.kibitzers]) {
+                for (const p of list) {
+                    p.commandAddPlayers(playerData);
+                }
+            }
+        }
+
+        player.setName(data.name);
+        player.setKibitzer(data.kibitzer);
+        this.updatePlayers([player]);
     }
 
     updateOptions(options) {
@@ -525,7 +1137,7 @@ class PlayersList {
 
     giveHands(hands) {
         for (const player of this.players) {
-            player.setHand(hands[player.getIndex()]);
+            player.addHand(hands[player.getIndex()]);
             player.commandDeal(hands);
         }
         for (const kibitzer of this.kibitzers) {
@@ -540,17 +1152,17 @@ class PlayersList {
     communicateTurn(state, turn) {
         if (state == CoreState.BIDDING) {
             for (const player of this.players) {
-                player.commandBid({turn: turn});
+                player.startBid({turn: turn});
             }
             for (const player of this.kibitzers) {
-                player.commandBid({turn: turn});
+                player.startBid({turn: turn});
             }
         } else if (state == CoreState.PLAYING) {
             for (const player of this.players) {
-                player.commandPlay({turn: turn});
+                player.startPlay({turn: turn});
             }
             for (const player of this.kibitzers) {
-                player.commandPlay({turn: turn});
+                player.startPlay({turn: turn});
             }
         }
     }
@@ -614,63 +1226,132 @@ class PlayersList {
         let newScores = [];
         for (const player of this.players) {
             player.addTaken();
-            let score = core.score(player.getBid(), player.getTaken());
+            let score = this.core.score(player.getBid(), player.getTaken());
             player.addScore(score);
             newScores.push(player.getScore());
+
+            player.mistakes.push(player.roundMistakes);
+
+            let qs = player.bidQs[player.bidQs.length - 1];
+            let mu = ai.pointsMean(qs, player.getBid());
+            let sig2 = ai.pointsVariance(qs, player.getBid());
+
+            let luck = Math.min(5, Math.max(-5,
+                (score - mu) / Math.sqrt(sig2)
+            ));
+            player.addLuck(sig2 == 0 ? 0 : luck);
         }
         this.emitAll('scoresreport', {scores: newScores});
+    }
+
+    addWbProbs(probs) {
+        for (let i = 0; i < this.players.length; i++) {
+            this.players[i].addWbProb(probs[i]);
+        }
+    }
+
+    postGameData(coreData) {
+        this.emitAll('postgame', {
+            rounds: coreData.rounds,
+            trumps: coreData.trumps,
+            leaders: coreData.leaders,
+            winners: coreData.winners,
+            claims: coreData.claims,
+            players: this.players.map(p => p.toPostGameDict())
+        });
     }
 
     sendChat(index, text) {
         this.emitAll('chat', {sender: this.players[index].getName(), text: text});
     }
+
+    sendEndGameRequest(index) {
+        this.emitAll('end', {index: index});
+    }
+
+    replaceWithRobot(index) {
+        this.players[index].replaceWithRobot();
+        this.updatePlayers([this.players[index]]);
+    }
+
+    announceClaim(index) {
+        this.emitAll('claim', {index: index, hand: this.players[index].getHand().map(c => c.toDict())});
+    }
+
+    respondToClaim(index, accept) {
+        if (!accept) {
+            this.emitAll('claimresult', {accepted: false, claimer: this.core.claimer});
+            this.core.claimer = undefined;
+        } else {
+            this.players[index].acceptedClaim = true;
+            if (this.players.filter(p => p.isHuman() && !p.replacedByRobot && !p.acceptedClaim).length == 0) {
+                let winner = this.players[this.core.claimer];
+                let remaining = winner.getHand().length;
+                if (!winner.getTrick().isEmpty()) {
+                    remaining++;
+                }
+
+                winner.taken += remaining;
+
+                this.emitAll('claimresult', {accepted: true, claimer: this.core.claimer, remaining: remaining});
+                this.core.acceptClaim();
+            } else {
+                return;
+            }
+        }
+
+        for (const player of this.players) {
+            player.acceptedClaim = false;
+        }
+    }
 }
 
 class HumanPlayer extends Player {
-    constructor(socket) {
+    constructor(user, core) {
         super();
-        this.socket = socket;
-        playerDict[this.socket.id] = this;
+        this.user = user;
+        this.core = core;
+        this.id = user.id;
         this.disconnected = false;
         this.human = true;
     }
 
-    reconnect(player) {
-        if (this.socket.connected) {
-            this.socket.emit('kick');
+    reconnect(user) { // TODO fix this
+        if (this.user.socket.connected && this.user.socket !== user.socket) {
+            this.user.socket.emit('kick');
         }
 
-        this.socket = player.socket;
-        playerDict[this.socket.id] = this;
+        this.user = user;
+        user.player = this;
     }
 
-    commandJoin() {
-        this.socket.emit('join');
+    commandJoin(data) {
+        this.user.socket.emit('join', data);
     }
 
     commandGameState(data) {
-        this.socket.emit('gamestate', data);
+        this.user.socket.emit('gamestate', data);
     }
 
     commandAddPlayers(data) {
-        this.socket.emit('addplayers', data);
+        this.user.socket.emit('addplayers', data);
     }
 
     commandRemovePlayers(data) {
-        this.socket.emit('removeplayers', data);
+        this.user.socket.emit('removeplayers', data);
     }
 
     commandUpdatePlayers(data) {
-        this.socket.emit('updateplayers', data);
+        this.user.socket.emit('updateplayers', data);
     }
 
     commandStart() {
-        this.socket.emit('start');
+        this.user.socket.emit('start');
     }
 
     commandDeal(data) {
         if (this.kibitzer) {
-            this.sock.emit('deal', data);
+            this.user.socket.emit('deal', data);
         } else {
             let copy = [];
             let empty = [];
@@ -684,20 +1365,60 @@ class HumanPlayer extends Player {
                     copy.push(empty);
                 }
             }
-            this.socket.emit('deal', copy);
+            this.user.socket.emit('deal', copy);
         }
     }
 
     commandBid(data) {
-        this.socket.emit('bid', data);
+        this.user.socket.emit('bid', data);
     }
 
     commandPlay(data) {
-        this.socket.emit('play', data);
+        this.user.socket.emit('play', data);
     }
 
     commandTrickWinner(data) {
-        this.socket.emit('trickwinner', data);
+        this.user.socket.emit('trickwinner', data);
+    }
+
+    setDisconnected(disc) {
+        this.disconnected = disc;
+        if (!disc) {
+            this.replacedByRobot = false;
+        }
+    }
+
+    replaceWithRobot() {
+        this.replacedByRobot = true;
+        if (this.readiedBid !== undefined) {
+            this.core.incomingBid(this.index, this.readiedBid);
+            this.readiedBid = undefined;
+        } else if (this.readiedPlay !== undefined) {
+            this.core.incomingPlay(this.index, this.readiedPlay);
+            this.readiedPlay = undefined;
+        }
+    }
+
+    bidReady(bid) {
+        if (this.replacedByRobot) {
+            this.core.incomingBid(this.index, bid);
+            this.readiedBid = undefined;
+        } else {
+            this.readiedBid = bid;
+        }
+    }
+
+    playReady(card) {
+        if (this.replacedByRobot) {
+            this.core.incomingPlay(this.index, card);
+            this.readiedPlay = undefined;
+        } else {
+            this.readiedPlay = card;
+        }
+    }
+
+    poke() {
+        this.user.socket.emit('poke');
     }
 }
 
@@ -707,34 +1428,16 @@ class AiPlayer extends Player {
         this.disconnected = false;
         this.human = false;
         this.id = '@robot' + i;
-        this.name = 'bot ' + i;
+        this.name = robotNames[Math.floor(robotNames.length * Math.random())] + ' bot'
         this.core = core;
     }
 
-    setStrategyModule(module) {
-        this.strategyModule = module;
+    bidReady(bid) {
+        this.core.incomingBid(this.index, bid);
     }
 
-    commandBid(data) {
-        if (data.turn == this.index) {
-            this.bidAsync();
-        }
-    }
-
-    async bidAsync() {
-        let bid = await this.strategyModule.makeBid();
-        core.incomingBid(this.index, bid);
-    }
-
-    commandPlay(data) {
-        if (data.turn == this.index) {
-            this.playAsync();
-        }
-    }
-
-    async playAsync() {
-        let card = await this.strategyModule.makePlay();
-        core.incomingPlay(this.index, card);
+    playReady(card) {
+        this.core.incomingPlay(this.index, card);
     }
 }
 
@@ -745,12 +1448,14 @@ var CoreStateEnum = function () {
     this.PLAYING = 2;
     this.POSTGAME = 3;
 };
+var CoreState = new CoreStateEnum();
 
 class Core {
-    constructor(players) {
+    constructor(players, game) {
         this.state = CoreState.PREGAME;
         this.options = new Options();
         this.players = players;
+        this.game = game;
         players.core = this;
     }
 
@@ -775,50 +1480,81 @@ class Core {
     }
 
     startGame() {
+        let N = this.players.players.filter(p => p.isHuman()).length + this.options.robots;
+        if (N <= 1 || N >= 11) {
+            return;
+        }
+
+        this.removeRobots();
         this.addRobots();
+        this.attachStrategyModules();
         this.randomizePlayerOrder();
 
         this.buildRounds();
-        this.updateRounds();
-
         this.roundNumber = 0;
         this.playNumber = 0;
+        this.updateRounds();
 
         this.players.newGame();
 
         this.trumps = [];
+        this.leaders = [];
+        this.winners = [];
+        this.claims = [];
         this.deck = new Deck(this.options.D);
+
+        if (debug) {
+            var sample = require('./sample');
+            this.fullDeals = sample.sample.map(ds => ds.map(h => h.map(c => new Card().fromString(c))));
+        }
+
         this.deal();
+    }
+
+    endGame(index) {
+        if (index != this.game.host.getIndex()) {
+            console.log('ERROR: Player "' + this.players.get(index).getId() + '" tried to end the game, but they are not host.');
+            return;
+        }
+
+        this.players.sendEndGameRequest(index);
+        this.sendPostGame();
     }
 
     randomizePlayerOrder() {}
 
+    removeRobots() {
+        let robots = this.players.getRobots();
+        this.players.removePlayers(robots);
+    }
+
     addRobots() {
-        let robots = [];
-        let modules = ai.buildStrategyModules(
-            this.options.robots,
-            this.players.size() + this.options.robots,
-            this.options.D
-        );
+        let robots = new Array(this.options.robots);
         for (let i = 0; i < this.options.robots; i++) {
-            let player = new AiPlayer(i + 1, this);
-            player.setStrategyModule(modules[i]);
-            modules[i].setCoreAndPlayer(this, player);
-            robots.push(player);
+            robots[i] = new AiPlayer(i + 1, this);
         }
         this.players.addRobots(robots);
+    }
+
+    attachStrategyModules() {
+        let modules = ai.buildStrategyModules(
+            this.players.size(),
+            this.options.D
+        );
+        this.players.attachStrategyModules(modules);
     }
 
     buildRounds() {
         this.rounds = [];
 
         //this.rounds.push({dealer: 0, handSize: 1, isOver: false});
+        //this.rounds.push({dealer: 0, handSize: 1, isOver: false});
 
-        let maxH = Math.min(10, Math.floor(51 * this.options.D / players.size()));
+        let maxH = Math.min(10, Math.floor(51 * this.options.D / this.players.size()));
         for (let i = maxH; i >= 2; i--) {
             this.rounds.push({dealer: 0, handSize: i, isOver: false});
         }
-        for (let i = 0; i < players.size(); i++) {
+        for (let i = 0; i < this.players.size(); i++) {
             this.rounds.push({dealer: 0, handSize: 1, isOver: false});
         }
         for (let i = 2; i <= maxH; i++) {
@@ -845,6 +1581,10 @@ class Core {
     }
 
     getNextHands() {
+        if (debug) {
+            return this.fullDeals[this.roundNumber];
+        }
+
         return this.deck.deal(this.players.size(), this.rounds[this.roundNumber].handSize);
     }
 
@@ -865,6 +1605,9 @@ class Core {
         this.turn = this.players.nextUnkicked(this.getDealer());
         this.leader = this.turn;
 
+        this.leaders.push([]);
+        this.winners.push([]);
+
         this.players.newRound();
         this.sendDealerLeader();
         this.players.giveHands(hands);
@@ -875,7 +1618,7 @@ class Core {
     }
 
     incomingBid(index, bid) {
-        let player = players.get(index);
+        let player = this.players.get(index);
 
         if (index != this.turn) {
             console.log('ERROR: Player "' + player.getId() + '" attempted to bid out of turn.');
@@ -897,14 +1640,14 @@ class Core {
 
         if (this.players.allHaveBid()) {
             this.state = CoreState.PLAYING;
-            this.trickOrder = new TrickOrder(this.trump.suit, this.players.size());
+            this.trickOrder = new TrickOrder(this.trump.suit);
         }
 
         this.players.communicateTurn(this.state, this.turn);
     }
 
     incomingPlay(index, card) {
-        let player = players.get(index);
+        let player = this.players.get(index);
 
         if (index != this.turn) {
             console.log('ERROR: Player "' + player.getId() + '" attempted to play out of turn.');
@@ -923,7 +1666,6 @@ class Core {
         this.seen.add(card);
 
         this.trickOrder.push(card, index);
-        console.log(this.trickOrder.order);
 
         this.players.playReport(index, card);
 
@@ -933,6 +1675,8 @@ class Core {
             this.players.communicateTurn(this.state, this.turn);
         } else {
             this.turn = this.trickOrder.getWinner();
+            this.winners[this.winners.length - 1].push(this.turn);
+            this.leaders[this.leaders.length - 1].push(this.leader);
             this.leader = this.turn;
             this.players.trickWinner(this.turn);
             this.trickOrder = new TrickOrder(this.trump.suit);
@@ -941,6 +1685,7 @@ class Core {
             if (!this.players.hasEmptyHand(this.turn)) {
                 this.players.communicateTurn(this.state, this.turn);
             } else {
+                this.claims.push(-1);
                 this.doNextRound();
             }
         }
@@ -954,8 +1699,35 @@ class Core {
         if (this.roundNumber < this.rounds.length) {
             this.deal();
         } else {
-
+            this.sendPostGame();
         }
+    }
+
+    sendPostGame() {
+        this.state = CoreState.POSTGAME;
+
+        // win %
+        let winningScore = Math.max(...this.players.players.map(p => p.getScore()))
+        let wb = new ml.BagModel(`./models/N${this.players.size()}/D${this.options.D}/T0/wb.txt`);
+        for (let j = 0; j < this.rounds.length; j++) {
+            if (j >= this.players.players[0].getScores().length) {
+                break;
+            }
+
+            let v = new ml.BasicVector(this.players.players.map(p => p.getScores()[j]).concat([this.rounds.length - 1 - j]));
+            let wbProbs = j == this.rounds.length - 1 ?
+                this.players.players.map(p => p.getScore() == winningScore ? 1 : 0) :
+                wb.evaluate(v).toArray();
+            this.players.addWbProbs(wbProbs);
+        }
+
+        this.players.postGameData({
+            rounds: this.rounds,
+            trumps: this.trumps.map(c => c.toDict()),
+            leaders: this.leaders,
+            winners: this.winners,
+            claims: this.claims
+        });
     }
 
     score(bid, taken) {
@@ -969,6 +1741,94 @@ class Core {
 
     incomingChat(index, text) {
         this.players.sendChat(index, text);
+    }
+
+    replaceWithRobot(index, indexTarget) {
+        if (this.players.get(index) !== this.game.host || !this.players.get(indexTarget).isDisconnected()) {
+            return;
+        }
+
+        this.players.replaceWithRobot(indexTarget);
+    }
+
+    poke(index) {
+        this.players.players[index].poke();
+    }
+
+    incomingClaim(index) {
+        if (this.state != CoreState.PLAYING || this.claimer !== undefined) {
+            return;
+        }
+
+        this.claimer = index;
+        this.players.announceClaim(index);
+
+        if (this.players.players.filter(p => !p.isHuman() || p.replacedByRobot).length) {
+            if (!this.hasColdClaim(index)) {
+                this.respondToClaim(-1, false);
+                return;
+            }
+        }
+
+        this.respondToClaim(index, true); // claimer auto-accepts
+    }
+
+    hasColdClaim(index) {
+        // reject if player is not on lead
+        // TODO do something better
+        if (index != this.leader || index != this.turn) {
+            return false;
+        }
+
+        let allHands = new Array(this.players.size());
+        for (const player of this.players.players) {
+            let suits = [[], [], [], []];
+            for (const card of player.getHand()) {
+                if (player.getIndex() == index) {
+                    suits[card.suit].push(card);
+                } else {
+                    suits[card.suit].unshift(card);
+                }
+            }
+            allHands[player.getIndex()] = suits;
+        }
+
+        for (let j = 0; j < 4; j++) {
+            if (j == this.trump.suit && Math.max(...allHands.map(suits => suits[j].length)) != allHands[index][j].length) {
+                return false;
+            }
+
+            while (allHands[index][j].length > 0) {
+                let myBest = allHands[index][j].pop();
+                for (let i = 0; i < this.players.size(); i++) {
+                    if (i == index || allHands[i][j].length == 0) {
+                        continue;
+                    }
+
+                    let yourBest = allHands[i][j][allHands[i][j].length - 1];
+                    if (myBest.comp(yourBest, this.trump.suit, myBest.suit) != 1) {
+                        return false;
+                    }
+
+                    allHands[i][j].pop();
+                }
+            }
+        }
+        return true;
+    }
+
+    respondToClaim(index, accept) {
+        if (this.claimer === undefined) {
+            return;
+        }
+
+        this.players.respondToClaim(index, accept);
+    }
+
+    acceptClaim() {
+        this.claims.push(this.claimer);
+        this.claimer = undefined;
+        this.doNextRound();
     }
 
     // data for ai
@@ -1002,7 +1862,7 @@ class Core {
 
     wants(index) {
         let player = this.players.players[index];
-        let h = this.getHandSize();
+        let h = this.players.players[index].getHand().length;
 
         if (!player.hasBid()) {
             return -1;
@@ -1019,30 +1879,32 @@ class Core {
         if (card !== undefined) {
             trick = trick.copy();
             trick.push(card, index);
-            return trick.cancelsRequired(index);
         }
 
-        let ans = new Array(trick.N);
+        let N = this.players.size();
+        let ans = new Array(N);
         if (trick.order.length == 0) {
             ans[trick.leader] == 0;
         }
 
+        //console.log(trick.order.map(e => [e.index, e.card.toString()]));
+
         let handSet = new Set();
         if (index !== undefined) {
-            this.players.players[index].getHand().forEach(c => handSet.add(c.toNumber()));
+            this.players.players[index].getHand().filter(c => c !== card).forEach(c => handSet.add(c.toNumber()));
         }
 
         let i = 0;
-        let max = (trick.leader - this.turn + trick.N - 1) % trick.N;
+        let max = (this.leader - this.turn + N - 1) % N;
         for (const entry of trick.order) {
             ans[entry.index] = i;
 
-            if (D == 1) {
+            if (this.options.D == 1) {
                 break;
             }
 
-            let uncancelableBecauseSeen = this.seen.matchingCardsLeft(entry.card) == this.options.D - 1;
-            let uncancelableBecauseInHand = handSet.has(card.toNumber());
+            let uncancelableBecauseSeen = this.seen.matchesLeft(entry.card) == 0;
+            let uncancelableBecauseInHand = handSet.has(entry.card.toNumber());
             if (uncancelableBecauseSeen || uncancelableBecauseInHand || i == max) {
                 break;
             }
@@ -1050,9 +1912,26 @@ class Core {
             i++;
         }
 
-        for (i = 0; i < trick.N; i++) {
-            
+        for (i = 0; i < N; i++) {
+            let j = (i + this.leader) % N;
+            if (ans[j] === undefined) {
+                if (i <= (this.turn - this.leader + N) % N) {
+                    ans[j] = -2;
+                } else {
+                    ans[j] = -1;
+                }
+            }
         }
+
+        return ans;
+    }
+
+    getLeader() {
+        return this.leader;
+    }
+
+    getLead() {
+        return this.players.players[this.leader].getTrick();
     }
 }
 
@@ -1064,15 +1943,14 @@ class TrickOrderEntry {
 }
 
 class TrickOrder {
-    constructor(trump, N) {
+    constructor(trump) {
         this.order = [];
         this.trump = trump;
         this.led = -1;
-        this.N = N;
     }
 
     copy() {
-        let ans = TrickOrder(this.trump, this.N);
+        let ans = new TrickOrder(this.trump);
         ans.led = this.led;
         for (const entry of this.order) {
             ans.order.push(entry);
@@ -1234,49 +2112,3 @@ class Options {
         this.teams = options.teams;
     }
 }
-
-// vars
-var players = new PlayersList();
-var host = undefined;
-var CoreState = new CoreStateEnum();
-var core = new Core(players);
-
-// Coordinator
-function joinPlayer(player, id) {
-    player.setName(id);
-    player.setId(id);
-
-    if (host == undefined) {
-        host = player;
-    }
-    player.setHost(host === player);
-
-    player.commandJoin();
-    players.addPlayer(player);
-}
-
-function disconnectPlayer(player, kick) {
-    players.disconnectPlayer(player, kick);
-}
-
-
-
-
-/*var nn = new ml.NNModel('./models/N5/D1/T0/ivl.txt', ['ReLu', 'Sigmoid']);
-
-var arr = new Array(87);
-for (let i = 0; i < 87; i++) {
-    arr[i] = Math.random();
-}
-
-var str = '';
-for (const x of arr) {
-    str += ',' + x;
-}
-str = '{' + str.substring(1) + '}';
-console.log(str);
-
-var v = new ml.BasicVector(arr);
-var w = nn.evaluate(v);
-console.log(w.toArray());
-*/

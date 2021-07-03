@@ -169,11 +169,13 @@ class SparseVector {
         return new SparseVector(entries1, this.totalSize);
     }
 
-    addOneHot(feature, val, min, max) {
+    addOneHot(feature, val, min, max, debug) {
         if (val < min || val > max) {
             throw 'Invalid value ' + val + ' for one-hot in [' + min + ', ' + max + '].';
         }
-        //console.log(feature, val, min, max);
+        if (debug) {
+            debug(feature + ' ' + val + ' ' + min + ' ' + max);
+        }
         if (val != min) {
             this.entries.push({key: this.totalSize + val - min - 1, value: 1});
         }
@@ -458,11 +460,8 @@ class NNModel {
 
         let data = fs.readFileSync(path, 'utf8');
 
-        let mats = data.split('\n\n');
+        let mats = data.split('\n\n').filter(code => code.length > 0);
         for (let i = 0; i < mats.length; i += 2) {
-            if (mats[i].length == 0 || mats[i + 1].length == 0) {
-                break;
-            }
             let w = new BasicMatrix().fromString(mats[i]);
             let b = new BasicVector().fromString(mats[i + 1]);
             this.layers.push(new Layer(w, b));
@@ -493,8 +492,68 @@ class NNModel {
     }
 }
 
+// trees
+class TreeRegion {
+    constructor(codes, index) {
+        let fields = codes[index].split(':');
+        if (fields[0] == 'l') {
+            this.c = new BasicVector().fromString(fields[1]);
+            this.isLeaf = true;
+            this.index = index;
+        } else {
+            this.j = parseInt(fields[1]);
+            this.s = parseFloat(fields[2]);
+            this.isLeaf = false;
+            this.sub1 = new TreeRegion(codes, index + 1);
+            this.sub2 = new TreeRegion(codes, this.sub1.index + 1);
+            this.index = this.sub2.index;
+        }
+    }
+
+    evaluate(v) {
+        if (this.isLeaf) {
+            return this.c;
+        } else if (v.get(this.j) <= this.s) {
+            return this.sub1.evaluate(v);
+        } else {
+            return this.sub2.evaluate(v);
+        }
+    }
+}
+
+class TreeModel {
+    constructor(code) {
+        let fields = code.split(';');
+        this.dIn = parseInt(fields[0]);
+        this.dOut = parseInt(fields[1]);
+        this.root = new TreeRegion(fields[2].split('|'), 1);
+    }
+
+    evaluate(v) {
+        return this.root.evaluate(v);
+    }
+}
+
+class BagModel {
+    constructor(path) {
+        let data = fs.readFileSync(path, 'utf8');
+        this.trees = data.split('\n').filter(code => code.length > 0).map(code => new TreeModel(code));
+        this.size = this.trees.length;
+        this.dIn = this.trees[0].dIn;
+        this.dOut = this.trees[0].dOut;
+    }
+
+    evaluate(v) {
+        return this.trees.map(t => t.evaluate(v)).reduce(
+            (w1, w2) => w1.add(w2, 1 / this.size),
+            new BasicVector(new Array(this.dOut).fill(0))
+        );
+    }
+}
+
 module.exports = {
     BasicVector: BasicVector,
     SparseVector: SparseVector,
-    NNModel: NNModel
+    NNModel: NNModel,
+    BagModel: BagModel
 }
