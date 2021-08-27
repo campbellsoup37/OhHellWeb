@@ -1,4 +1,5 @@
 // Connection
+var baseUrl;
 var socket;
 
 /*
@@ -8,7 +9,7 @@ var frame, ctx;
 var cachedWidth, cachedHeight;
 var ClientState, state;
 var GameState, gameState;
-var stateCanvas, mainMenuCanvas, canvas;
+var loadingCanvas, stateCanvas, mainMenuCanvas, modeSelectCanvas, canvas;
 var stateDivs;
 var mpButton;
 var lmUsername, lmConnect;
@@ -17,20 +18,27 @@ var igLeftDiv, igRightDiv, igScoreSheetContainer, igRightSpacerDiv;
 var igHotdogContainer;
 
 var username;
+var autojoinId;
 
 // variables
 var games;
 var players, myPlayer;
+var teams;
 var options;
+var mode;
+var multiplayer;
 var rounds, roundNumber;
 var trump;
 var dealer, leader, turn;
+var canPlay;
 var cardJustPlayed;
 var takenTimer, trickTaken;
 var message;
 var showMessageButtons;
 var preselected;
 var showOneCard;
+var robotDelay;
+var pass;
 
 // constants
 var cardSeparation;
@@ -136,6 +144,7 @@ function drawBox(ctx, x, y, width, height, roundness, thickBorderColor, noBorder
 	if (!noBorder) {
         color = ctx.strokeStyle;
     	ctx.strokeStyle = thickBorderColor === undefined ? 'black' : thickBorderColor;
+        ctx.lineWidth = thickBorderColor === undefined ? 1 : 2;
 
     	ctx.beginPath();
     	ctx.moveTo(x + roundness, y);
@@ -151,6 +160,7 @@ function drawBox(ctx, x, y, width, height, roundness, thickBorderColor, noBorder
     	ctx.stroke();
 
     	ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
     }
 }
 
@@ -213,9 +223,7 @@ function drawLine(ctx, x1, y1, x2, y2) {
     ctx.stroke();
 }
 
-/*
- * CanvasInteractables
- */
+// abstract interactables
 class CanvasInteractable {
     constructor() {
         this.moused = false;
@@ -263,9 +271,9 @@ class CanvasInteractable {
     			&& y >= this.y()
     			&& y <= this.y() + this.height());
 
-        let ans = undefined;
+        this.interactableMoused = undefined;
         if (this.isMoused()) {
-            ans = this;
+            this.interactableMoused = this;
             for (const inter of this.interactables) {
                 if (!inter.isShown()) {
                     continue;
@@ -273,16 +281,16 @@ class CanvasInteractable {
 
                 let ans1 = inter.updateMoused(x, y);
                 if (ans1 !== undefined) {
-                    ans = ans1;
+                    this.interactableMoused = ans1;
                 }
             }
         }
 
-        if (ans === this) {
+        if (this.interactableMoused === this) {
             document.body.style.cursor = this.cursor();
         }
 
-    	return ans;
+    	return this.interactableMoused;
     }
 }
 
@@ -332,6 +340,11 @@ class WrappedDOMElement extends CanvasInteractable {
         this.auto = auto;
         if (!auto) {
             this.element.style.position = 'absolute';
+        } else {
+            this.x = () => this.element.getBoundingClientRect().left;
+            this.y = () => this.element.getBoundingClientRect().top;
+            this.width = () => this.element.clientWidth;
+            this.height = () => this.element.clientHeight;
         }
     }
 
@@ -385,13 +398,6 @@ class PanelInteractable extends WrappedDOMElement {
         this.container = () => container.parentElement;
         this.panel = new Panel(container, canvas);
         this.ctx = this.panel.ctx;
-
-        if (this.auto) {
-            this.x = () => this.panel.container.getBoundingClientRect().left;
-            this.y = () => this.panel.container.getBoundingClientRect().top;
-            this.width = () => this.panel.container.clientWidth;
-            this.height = () => this.panel.container.clientHeight;
-        }
     }
 
     fillContainer(force) {
@@ -409,9 +415,7 @@ class PanelInteractable extends WrappedDOMElement {
     }
 }
 
-/*
- * CanvasButton
- */
+// homemade button and text field
 class CanvasButton extends CanvasInteractable {
     constructor(text) {
         super();
@@ -435,9 +439,6 @@ class CanvasButton extends CanvasInteractable {
     }
 }
 
-/*
- * TextField
- */
 class TextField extends CanvasInteractable {
     constructor(defaultText) {
         super();
@@ -589,14 +590,14 @@ class PlayerNamePlate extends CanvasInteractable {
         }
 
         // plate
-        if (preOrPost && this.player.isHost() || !preOrPost && turn == this.player.getIndex()) {
+        if (preOrPost && this.player.isHost() || !preOrPost && turn == this.player.getIndex() || gameState == GameState.PASSING && !this.player.passed) {
             ctx.fillStyle = "yellow";
         } else if (!this.player.human) {
             ctx.fillStyle = 'rgb(210, 255, 255)';
         } else {
             ctx.fillStyle = "white";
         }
-        drawBox(ctx, this.x(), this.y(), this.width(), this.height(), 12, undefined);
+        drawBox(ctx, this.x(), this.y(), this.width(), this.height(), 12, options.teams ? colors[this.player.team] : undefined);
 
         // name
         drawText(ctx,
@@ -623,20 +624,28 @@ class PlayerNamePlate extends CanvasInteractable {
             let bidY = startY * (1 - this.player.getBidTimer()) + endY * this.player.getBidTimer();
             let radius = 50 * (1 - this.player.getBidTimer()) + 16 * this.player.getBidTimer();
 
+            let h = this.player.hand.length + (this.player.trick.isEmpty() ? 0 : 1);
+            let want = this.player.bid - this.player.taken;
+            if (options.teams) {
+                let team = teams[this.player.team];
+                want = team.bid() - team.taken();
+            }
             if (this.player.getBidTimer() < 1) {
                 ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-            } else if (gameState == GameState.BIDDING || this.player.getBid() > this.player.getTaken()) {
+            } else if (gameState == GameState.BIDDING || want > 0 && want <= h) {
                 ctx.fillStyle = 'rgba(175, 175, 175, 0.7)';
-            } else if (this.player.getBid() == this.player.getTaken()) {
+            } else if (want == 0) {
                 ctx.fillStyle = 'rgb(125, 255, 125)';
             } else {
                 ctx.fillStyle = 'rgb(255, 175, 175)';
             }
             drawOval(ctx, bidX - radius / 2, bidY - radius / 2, radius, radius);
             if (this.player.getBidTimer() == 0) {
-                ctx.fillStyle = 'black';
+                ctx.strokeStyle = options.teams ? colors[this.player.team] : 'black';
+                ctx.lineWidth = options.teams ? 2 : 1;
                 drawOval(ctx, bidX - radius / 2, bidY - radius / 2, radius, radius, false);
-                drawText(ctx, this.player.getBid(), bidX, bidY, 1, 1, fontLarge, 'black');
+                ctx.lineWidth = 1;
+                drawText(ctx, this.player.getBid(), bidX, bidY + 1, 1, 1, fontLarge, 'black');
             } else {
                 drawText(ctx, this.player.getBid(), bidX, bidY, 1, 1, font, 'black');
             }
@@ -721,9 +730,7 @@ class CanvasCard extends CanvasInteractable {
     }
 }
 
-/*
- * ScoreSheet
- */
+// scoresheet
 class ScoreSheet extends WrappedDOMElement {
     constructor(prefix) {
         super(document.getElementById(`${prefix}ScoreSheetContainer`));
@@ -786,10 +793,9 @@ class ScoreSheet extends WrappedDOMElement {
     }
 
     height() {
-        let height = this.scoreVSpacing * (this.getRounds().length + 1 + 0) // TODO teams
-                        + this.lineV
-                        + 3 * this.margin
-                        + this.sortByHeight;
+        let height = this.scoreVSpacing * this.getRounds().length
+                        + this.headerHeight()
+                        + this.footerHeight() + 2;
         let m = 12;
         return Math.min(
             height,
@@ -798,7 +804,8 @@ class ScoreSheet extends WrappedDOMElement {
     }
 
     headerHeight() {
-        return this.margin + this.scoreVSpacing + this.lineV / 2;
+        let numRows = this.options && this.options.teams ? 2 : 1;
+        return this.margin + this.scoreVSpacing * numRows  + this.lineV / 2;
     }
 
     footerHeight() {
@@ -810,7 +817,7 @@ class ScoreSheet extends WrappedDOMElement {
     }
 
     scrollCanvasHeight() {
-        return this.scoreVSpacing * rounds.length + this.lineV / 2;
+        return this.scoreVSpacing * this.rounds.length + this.lineV / 2;
     }
 
     paintHeader(ctx) {
@@ -818,40 +825,72 @@ class ScoreSheet extends WrappedDOMElement {
         let wid = (this.width() - 4 * this.margin - 2 * this.dealerHWidth) / N;
         let currentX = 3 * this.margin + 2 * this.dealerHWidth;
 
+        let height = this.headerHeight();
+
         // horizontal line
         ctx.fillStyle = 'black';
         drawLine(ctx,
             currentX,
-            this.headerHeight(),
+            height,
             this.width() - this.margin,
-            this.headerHeight()
+            height
         );
 
-        for (let i = 0; i < N; i++) {
+        let indices = [];
+        if (this.options.teams) {
+            let teamX = currentX;
+            for (const team of this.teams) {
+                if (team.members.length == 0) {
+                    continue;
+                }
+
+                let teamWid = wid * team.members.length;
+                ctx.fillStyle = 'white';
+                drawBox(ctx,
+                    teamX + 1, this.margin, teamWid - 2, this.scoreVSpacing,
+                    10, colors[team.number]
+                );
+                drawText(ctx,
+                    team.name.substring(0, 15),
+                    teamX + teamWid / 2,
+                    this.margin + this.scoreVSpacing / 2,
+                    1, 1,
+                    fontBold,
+                    colors[team.number],
+                    teamWid - 6
+                );
+                indices = indices.concat(team.members.map(p => p.index));
+                teamX += teamWid;
+            }
+        } else {
+            indices = [...Array(this.players.length).keys()];
+        }
+
+        for (let j = 0; j < N; j++) {
+            let i = indices[j];
             let player = this.players[i];
-            let fullWid = wid; // TODO teams
 
             // name
             drawText(ctx,
                 player.name.substring(0, 15),
-                currentX + fullWid / 2,
-                this.margin + this.scoreVSpacing / 2,
+                currentX + wid / 2,
+                height - this.scoreVSpacing / 2 - this.lineV / 2,
                 1, 1,
-                player.id == myPlayer.id ? fontBold : font,
+                myPlayer && player.id == myPlayer.id ? fontBold : font,
                 'black',
-                fullWid - 6
+                wid - 6
             );
 
-            if (i > 0) {
+            if (j > 0) {
                 drawLine(ctx,
                     currentX,
-                    this.margin,
+                    height - this.scoreVSpacing - this.lineV / 2,
                     currentX,
-                    this.headerHeight()
+                    height
                 );
             }
 
-            currentX += fullWid;
+            currentX += wid;
         }
     }
 
@@ -864,8 +903,28 @@ class ScoreSheet extends WrappedDOMElement {
         // dealers and hand sizes
         for (let i = 0; i < this.rounds.length; i++) {
             let round = this.rounds[i];
+
+            let info = '';
+            if (mode == 'Oh Hell') {
+                info = round.handSize;
+            } else if (mode == 'Oregon Hearts') {
+                if (round.pass == 0) {
+                    info = 'K';
+                } else if (round.pass > 0) {
+                    info = 'L';
+                    if (round.pass > 1) {
+                        info += round.pass;
+                    }
+                } else if (round.pass < 0) {
+                    info = 'R';
+                    if (round.pass < -1) {
+                        info += (-round.pass);
+                    }
+                }
+            }
+
             drawText(ctx,
-                round.handSize,
+                info,
                 this.margin + this.dealerHWidth / 2,
                 this.scoreVSpacing * (i + 0.5),
                 1, 1,
@@ -882,50 +941,47 @@ class ScoreSheet extends WrappedDOMElement {
 
         // rest
         let currentX = 3 * this.margin + 2 * this.dealerHWidth;
-        for (let i = 0; i < N; i++) {
-            let player = this.players[i];
-            let fullWid = wid; // TODO teams
+
+        let colCount = this.options.teams ? this.teams.length : this.players.length;
+        for (let i = 0; i < colCount; i++) {
+            let members = this.options.teams ? this.teams[i].members : [this.players[i]];
+            let scoresList = members[0].scores;
+            let fullWid = wid * members.length;
 
             if (i > 0) {
                 drawLine(ctx, currentX, 0, currentX, height);
             }
 
-            for (let j = 0; j < rounds.length; j++) {
-                let score = j < player.scores.length ? player.scores[j] : '';
+            for (let j = 0; j < this.rounds.length; j++) {
+                let score = j < scoresList.length ? scoresList[j] : '';
 
-                let members = [player];
                 let k = members.length;
-
                 let fnt = font;
-                /*let currentWid = 3 * this.margin
-                                    + getStringDimensions(score, fnt)[0]
-                                    + (13 + this.margin) * k
-                                    - this.margin;
-                if (currentWid >= fullWid) {
-                    fnt = fontSmall;
-                }*/
+                let b = 0;
 
-                // bid chips
-                let b = (fnt == font ? 13 : 9) + 3;
-                let chipStart = j < player.scores.length ? 0 : this.margin + b - wid;
-                let chipSpacing = j < player.scores.length ? this.margin + b : wid;
-                for (const p of members) {
-                    if (j < p.bids.length) {
-                        ctx.fillStyle = 'rgba(200, 200, 200, 0.7)';
-                        drawOval(ctx,
-                            currentX + 1 + fullWid - chipSpacing * k - chipStart,
-                            this.scoreVSpacing * (j + 0.5) - b / 2,
-                            b, b
-                        );
-                        drawText(ctx,
-                            p.bids[j],
-                            currentX + 1 + fullWid - chipSpacing * k - chipStart + b / 2,
-                            this.scoreVSpacing * (j + 0.5),
-                            1, 1,
-                            fnt, 'black'
-                        );
+                if (mode == 'Oh Hell') {
+                    // bid chips
+                    b = (fnt == font ? 13 : 9) + 3;
+                    let chipStart = j < scoresList.length ? 0 : this.margin + b - wid;
+                    let chipSpacing = j < scoresList.length ? this.margin + b : wid;
+                    for (const p of members) {
+                        if (j < p.bids.length) {
+                            ctx.fillStyle = 'rgba(200, 200, 200, 0.7)';
+                            drawOval(ctx,
+                                currentX + 1 + fullWid - chipSpacing * k - chipStart,
+                                this.scoreVSpacing * (j + 0.5) - b / 2,
+                                b, b
+                            );
+                            drawText(ctx,
+                                p.bids[j],
+                                currentX + 1 + fullWid - chipSpacing * k - chipStart + b / 2,
+                                this.scoreVSpacing * (j + 0.5),
+                                1, 1,
+                                fnt, 'black'
+                            );
+                        }
+                        k--;
                     }
-                    k--;
                 }
 
                 // scores
@@ -949,16 +1005,25 @@ class ScoreSheet extends WrappedDOMElement {
         }
         super.paint();
 
+        this.options = this.getOptions();
         this.playersUnsorted = this.getPlayers();
         this.players = this.playersUnsorted.map(p => p);
+        if (this.options.teams) {
+            this.teams = this.getTeams().map(t => t).filter(t => t.members.length > 0);
+        }
         this.rounds = this.getRounds();
 
-        if (!players.length) {
+        if (!this.players.length) {
             return;
         }
 
         if (this.sortBy == 1) {
-            this.players.sort((p1, p2) => Math.sign(p2.score - p1.score));
+            let sign = mode == 'Oregon Hearts' ? -1 : 1;
+            if (this.options.teams) {
+                this.teams.sort((t1, t2) => sign * Math.sign(t2.members[0].score - t1.members[0].score));
+            } else {
+                this.players.sort((p1, p2) => sign * Math.sign(p2.score - p1.score));
+            }
         }
 
         for (const inter of this.interactables) {
@@ -967,12 +1032,10 @@ class ScoreSheet extends WrappedDOMElement {
     }
 }
 
-/*
- * PostGamePage
- */
-class PostGamePage extends CanvasInteractable {
+// postgame
+class PostGamePage extends WrappedDOMElement {
     constructor() {
-        super();
+        super(document.getElementById('igPgTabDiv'), true);
 
         this.scoreTab = new PostGamePlotTab(this, 0);
         this.winTab = new PostGamePlotTab(this, 1);
@@ -1003,22 +1066,6 @@ class PostGamePage extends CanvasInteractable {
         toggleButton(this.buttons[0]);
     }
 
-    x() {
-        return postGameDiv.getBoundingClientRect().left;
-    }
-
-    y() {
-        return postGameDiv.getBoundingClientRect().left;
-    }
-
-    width() {
-        return postGameDiv.clientWidth;
-    }
-
-    height() {
-        return postGameDiv.clientHeight;
-    }
-
     paint() {
         if (gameState != GameState.POSTGAME) {
             return;
@@ -1027,21 +1074,58 @@ class PostGamePage extends CanvasInteractable {
         this.tabs[this.tabSelected].paint();
     }
 
-    setSortedScores(data) {
-        this.scoreTab.scoreBoard.sortedScores = data;
-        this.winTab.scoreBoard.sortedScores = data;
-    }
+    setData(data) {
+        let sortedScores = undefined;
+        if (data.options.teams) {
+            sortedScores = data.teams.filter(t => t.members.length > 0).map(function (t) {
+                let p = t.members[0];
+                return {
+                    name: t.name,
+                    index: t.number,
+                    score: p.scores.length == 0 ? 0 : p.scores[p.scores.length - 1]
+                };
+            });
+        } else {
+            sortedScores = data.players.map(function (p) {return {
+                name: p.name,
+                index: p.index,
+                score: p.scores.length == 0 ? 0 : p.scores[p.scores.length - 1]
+            };});
+        }
+        let sign = mode == 'Oh Hell' ? 1 : -1;
+        sortedScores.sort((p1, p2) => sign * Math.sign(p2.score - p1.score));
+        this.scoreTab.scoreBoard.sortedScores = sortedScores;
+        this.winTab.scoreBoard.sortedScores = sortedScores;
 
-    setAllScores(datas, ticks) {
-        for (const data of datas) {
+        let plotDatas = undefined;
+        if (data.options.teams) {
+            plotDatas = data.teams.filter(t => t.members.length > 0).map(function (t) {
+                let p = t.members[0];
+                return {
+                    name: t.name,
+                    index: t.number,
+                    scores: [0].concat(p.scores),
+                    wbProbs: [100 / data.players.length].concat(p.wbProbs.map(x => 100 * x))
+                };
+            });
+        } else {
+            plotDatas = data.players.map(function (p) {
+                return {
+                    name: p.name,
+                    index: p.index,
+                    scores: [0].concat(p.scores),
+                    wbProbs: [100 / data.players.length].concat(p.wbProbs.map(x => 100 * x))
+                };
+            });
+        }
+        let ticks = [''].concat(data.rounds.map(r => r.handSize));
+        for (const data of plotDatas) {
             this.scoreTab.scorePlot.addData(data.scores, data.index, data.name);
             this.winTab.scorePlot.addData(data.wbProbs, data.index, data.name);
         }
         this.scoreTab.scorePlot.addTicks(ticks);
         this.winTab.scorePlot.addTicks(ticks);
-    }
 
-    setData(data) {
         this.summaryTab.addData(data);
         this.bidsTab.addData(data);
         this.playsTab.addData(data);
@@ -1274,7 +1358,7 @@ class PostGamePlotTab extends PostGameTab {
             let current = 999999999;
             let i = 0;
             for (const score of this.sortedScores) {
-                if (score.score < current) {
+                if (score.score != current) {
                     place = i + 1;
                     current = score.score;
                 }
@@ -1378,6 +1462,7 @@ class PostGameSummaryTab extends PostGameTab {
     }
 
     addData(data) {
+        this.options = data.options;
         this.players = data.players;
         this.lucks = data.players.map(p => p.lucks.reduce((a, b) => a + b, 0));
         this.diffs = data.players.map(p => p.diffs.reduce((a, b) => a + b, 0));
@@ -1410,7 +1495,7 @@ class PostGameSummaryTab extends PostGameTab {
             let h0 = this.headerHeight + player.index * h + h / 2;
 
             // columns
-            drawText(ctx, player.name, 2 * this.margin, h0, 0, 1, font, 'black');
+            drawText(ctx, player.name, 2 * this.margin, h0, 0, 1, font, this.options.teams ? colors[player.team] : 'black');
             drawText(ctx, player.score, width * this.columnXs[0], h0, 1, 1, font, 'black');
             let bidScore = this.bidScores[i];
             drawText(ctx, !player.human && bidScore > 9.99 ? '--' : bidScore.toFixed(1), width * this.columnXs[2], h0, 1, 1, font, 'black');
@@ -1494,6 +1579,7 @@ class PostGameBidsTab extends PostGameTab {
     }
 
     addData(data) {
+        this.options = data.options;
         this.numRounds = data.players[0].hands.length;
         let rounds = data.rounds.map(r => r.handSize);
         this.dealers = data.rounds.map(r => r.dealer);
@@ -1565,7 +1651,7 @@ class PostGameBidsTab extends PostGameTab {
             let h0 = this.headerHeight + player.index * h + h / 2;
 
             // name
-            drawText(ctx, player.name, 2 * this.margin, h0, 0, 1, font, 'black');
+            drawText(ctx, player.name, 2 * this.margin, h0, 0, 1, font, this.options.teams ? colors[player.team] : 'black');
 
             // trump
             if (player.index == this.dealers[this.selected]) {
@@ -1649,6 +1735,7 @@ class PostGamePlaysTab extends PostGameTab {
     }
 
     addData(data) {
+        this.options = data.options;
         this.numRounds = data.players[0].hands.length;
         this.numTricks = new Array(this.numRounds);
 
@@ -1824,7 +1911,7 @@ class PostGamePlaysTab extends PostGameTab {
             let h0 = this.headerHeight + player.index * h + h / 2;
 
             // name
-            drawText(ctx, player.name, 2 * this.margin, h0, 0, 1, font, 'black');
+            drawText(ctx, player.name, 2 * this.margin, h0, 0, 1, font, this.options.teams ? colors[player.team] : 'black');
 
             // trump
             if (player.index == this.dealers[this.selected0]) {
@@ -1923,7 +2010,7 @@ class OhcCanvas {
     }
 
     mouseMoved(x, y) {
-        if (this.interactables == undefined) {
+        if (this.interactables === undefined) {
     		return;
     	}
 
@@ -2066,11 +2153,12 @@ class MainMenuCanvas extends OhcCanvas {
         this.setBackground(document.getElementById('background'));
 
         let joinGameButton = document.getElementById('mmJoinMp');
-        joinGameButton.addEventListener('click', () => {joinMpGame(this.gameSelected());});
+        joinGameButton.addEventListener('click', () => {reloadWithId(this.gameSelected());});
 
-        document.getElementById('mmHostMp').addEventListener('click', createMpGame);
-        document.getElementById('mmSinglePlayer').addEventListener('click', createSpGame);
+        document.getElementById('mmHostMp').addEventListener('click', () => goToModeSelect(true));
+        document.getElementById('mmSinglePlayer').addEventListener('click', () => goToModeSelect(false));
 
+        document.getElementById('mmSavedGame').addEventListener('click', () => openFile());
         document.getElementById('mmLogout').addEventListener('click', logout);
 
         class GameListEntry extends CanvasInteractable {
@@ -2139,9 +2227,20 @@ class MainMenuCanvas extends OhcCanvas {
                             drawBox(this.ctx, 2, entry.offset, entry.width() - 4, entry.height(), 10);
                         }
                         let inGame = games[i].state == 'In game';
+
+                        let modeColor = 'black';
+                        switch (games[i].mode) {
+                            case 'Oh Hell':
+                                modeColor = 'green';
+                                break;
+                            case 'Oregon Hearts':
+                                modeColor = 'rgb(255, 100, 100)';
+                                break;
+                        }
+
                         drawText(this.ctx, games[i].id, entry.width() * this.columnXs[0], entry.offset + entry.height() / 2, 1, 1, fnt, 'black');
                         drawText(this.ctx, games[i].host.substring(0, 15), entry.width() * this.columnXs[1], entry.offset + entry.height() / 2, 1, 1, fnt, 'black');
-                        drawText(this.ctx, games[i].type, entry.width() * this.columnXs[2], entry.offset + entry.height() / 2, 1, 1, fnt, 'black');
+                        drawText(this.ctx, games[i].mode, entry.width() * this.columnXs[2], entry.offset + entry.height() / 2, 1, 1, fnt, modeColor);
                         drawText(this.ctx, games[i].players, entry.width() * this.columnXs[3], entry.offset + entry.height() / 2, 1, 1, fnt, 'black');
                         drawText(this.ctx, games[i].state, entry.width() * this.columnXs[4], entry.offset + entry.height() / 2, 1, 1, fnt, inGame ? 'orange' : 'green');
                     };
@@ -2192,12 +2291,162 @@ class InGameCanvas extends OhcCanvas {
         let thisCanvas = this;
 
         // filled out statically
+        class TeamsPanel extends PanelInteractable {
+            constructor() {
+                super(
+                    document.getElementById('igTeamsContainer'),
+                    document.getElementById('igTeamsCanvas'),
+                    true
+                );
+
+                let parent = this;
+
+                class PlayerButton extends CanvasInteractable {
+                    constructor(player) {
+                        super();
+                        this.player = player;
+                        this.y0 = 1;
+                    }
+
+                    x() {return parent.x() + 5;}
+                    y() {return parent.y() + this.y0 - 9;}
+                    width() {return parent.width() - 10;}
+                    height() {return 19;}
+
+                    isEnabled() {
+                        return myPlayer.host;
+                    }
+
+                    paint() {
+                        let x = this.x() - parent.x();
+                        let y = this.y() - parent.y();
+
+                        if (this.isEnabled()) {
+                            if (this.isMoused()) {
+                                parent.ctx.fillStyle = '#C0C0C0';
+                                drawBox(parent.ctx, x, y, this.width(), this.height(), 10, undefined, true);
+                            }
+                            if (parent.playerSelected === this.player) {
+                                parent.ctx.fillStyle = '#C0C0C0';
+                                drawBox(parent.ctx, x, y, this.width(), this.height(), 10, undefined, false);
+                            }
+                        }
+
+                        drawText(parent.ctx, this.player.name, x + this.width() / 2, y + 10, 1, 1, font, 'black');
+                    }
+
+                    click() {
+                        if (parent.playerSelected === this.player) {
+                            parent.playerSelected = undefined;
+                        } else {
+                            parent.playerSelected = this.player;
+                        }
+                    }
+                }
+                this.PlayerButton = PlayerButton;
+
+                class TeamButton extends CanvasInteractable {
+                    constructor(number) {
+                        super();
+                        this.number = number;
+                        this.members = [];
+                        this.y0 = 1;
+                    }
+
+                    x() {return parent.x() + 1;}
+                    y() {return parent.y() + this.y0;}
+                    width() {return parent.width() - 2;}
+                    height() {return this.members.length * 20 + 25;}
+
+                    isShown() {return this.members.length > 0;}
+
+                    paint() {
+                        this.members = teams[this.number].members;
+
+                        this.interactables = this.members.map(p => parent.playerButtons[p.id]);
+
+                        if (!this.isShown()) {
+                            return;
+                        }
+
+                        let x = this.x() - parent.x();
+                        let y = this.y() - parent.y();
+
+                        parent.ctx.fillStyle = this.isMoused() && this.interactableMoused === this ? '#C0C0C0' : 'white';
+                        drawBox(parent.ctx, x, y, this.width(), this.height(), 10, colors[this.number]);
+
+                        drawText(parent.ctx, teams[this.number].name, x + this.width() / 2, y + 10, 1, 1, fontBold, colors[this.number]);
+                        for (let i = 0; i < this.members.length; i++) {
+                            this.interactables[i].y0 = y + 10 + 20 * (i + 1);
+                            this.interactables[i].paint();
+                        }
+                    }
+
+                    click() {
+                        if (parent.playerSelected !== undefined) {
+                            reteam(parent.playerSelected.index, this.number);
+                            parent.playerSelected = undefined;
+                        } else {
+                            reteam(myPlayer.index, this.number);
+                        }
+                    }
+                }
+
+                this.playerButtons = {};
+                this.playerSelected = undefined;
+
+                this.teamButtons = [];
+                for (const team of teams) {
+                    this.teamButtons.push(new TeamButton(team.number));
+                }
+                this.interactables = this.teamButtons;
+            }
+
+            paint() {
+                super.paint();
+
+                for (const player of players) {
+                    if (this.playerButtons[player.id] === undefined) {
+                        this.playerButtons[player.id] = new this.PlayerButton(player);
+                    }
+                }
+
+                let y = 1;
+                for (const button of this.teamButtons) {
+                    button.y0 = y;
+                    button.paint();
+                    if (button.isShown()) {
+                        y += button.height() + 5;
+                    }
+                }
+
+                this.element.style.height = y + 'px';
+                document.getElementById('teamsDiv').style.height =
+                    y + 40
+                    + document.getElementById('igNewTeam').clientHeight
+                    + document.getElementById('igRandomizeTeams').clientHeight
+                    + 'px';
+            }
+        }
+        this.teamsPanel = new TeamsPanel();
+        document.getElementById("igNewTeam").addEventListener('click', () => {
+            if (this.teamsPanel.playerSelected !== undefined) {
+                reteam(this.teamsPanel.playerSelected.index);
+                this.teamsPanel.playerSelected = undefined;
+            } else {
+                reteam(myPlayer.index)
+            }
+        });
+        document.getElementById("igRandomizeTeams").addEventListener('click', () => scrambleTeams());
+
         this.scoreSheet = new ScoreSheet('ig');
         this.scoreSheet.x = function () {return cachedWidth - (scoreWidth - scoreMargin);};
         this.scoreSheet.y = function () {return scoreMargin;};
         this.scoreSheet.width = function () {return scoreWidth - 2 * scoreMargin;};
         this.scoreSheet.getPlayers = () => this.scoreSheetPlayers();
+        this.scoreSheet.getTeams = () => this.scoreSheetTeams();
         this.scoreSheet.getRounds = () => this.scoreSheetRounds();
+        this.scoreSheet.getOptions = () => this.scoreSheetOptions();
         this.scoreSheet.container = () => gameState == GameState.POSTGAME ? document.getElementById('postGameDiv') : document.getElementById('inGameDiv');
         this.scoreSheet.isShown = () => gameState != GameState.PREGAME;
 
@@ -2217,24 +2466,31 @@ class InGameCanvas extends OhcCanvas {
             container() {return document.getElementById('inGameDiv');}
 
             paint() {
+                super.paint();
                 if (!gameState || gameState == GameState.PREGAME || gameState == GameState.POSTGAME || roundNumber >= rounds.length) {
                     return;
                 }
-                super.paint();
 
                 this.clear();
                 this.fillContainer();
 
                 let handSize = rounds[roundNumber].handSize;
-                let totalBid = players.map(p => p.hasBid() ? p.getBid() : 0).reduce((a, b) => a + b);
-                let totalMaxBidTaken = players.map(p => p.hasBid() ? Math.max(p.getBid(), p.getTaken()) : 0).reduce((a, b) => a + b);
+                let totalBid = 0;
+                let totalMaxBidTaken = 0;
+                if (options.teams) {
+                    totalBid = teams.map(t => t.bid()).reduce((a, b) => a + b, 0);
+                    totalMaxBidTaken = teams.map(t => Math.max(t.bid(), t.taken())).reduce((a, b) => a + b, 0);
+                } else {
+                    totalBid = players.map(p => p.hasBid() ? p.getBid() : 0).reduce((a, b) => a + b, 0);
+                    totalMaxBidTaken = players.map(p => p.hasBid() ? Math.max(p.getBid(), p.getTaken()) : 0).reduce((a, b) => a + b, 0);
+                }
 
                 let leftMessage = totalBid <= handSize ?
-                    'Underbid by ' + (handSize - totalBid) :
-                    'Overbid by ' + (totalBid - handSize);
+                    'Underbid by: ' + (handSize - totalBid) :
+                    'Overbid by: ' + (totalBid - handSize);
                 let rightMessage = totalMaxBidTaken <= handSize ?
-                    'Unwanted tricks ' + (handSize - totalMaxBidTaken) :
-                    'Excess tricks wanted ' + (totalMaxBidTaken - handSize);
+                    'Unwanted tricks: ' + (handSize - totalMaxBidTaken) :
+                    'Excess tricks wanted: ' + (totalMaxBidTaken - handSize);
 
                 let leftColor = totalBid <= handSize ? 'rgb(0, 0, 120)' : 'rgb(120, 0, 0)';
                 let rightColor = totalMaxBidTaken <= handSize ? 'rgb(0, 0, 120)' : 'rgb(120, 0, 0)';
@@ -2247,6 +2503,52 @@ class InGameCanvas extends OhcCanvas {
             }
         }
         this.hotdog = new Hotdog();
+
+        class TeamInfo extends PanelInteractable {
+            constructor() {
+                super(
+                    document.getElementById('igTeamInfoContainer'),
+                    document.getElementById('igTeamInfoCanvas'),
+                    false
+                );
+            }
+
+            x() {return thisCanvas.scoreSheet.x();}
+            y() {return thisCanvas.scoreSheet.y() + thisCanvas.scoreSheet.height() + 5 + thisCanvas.hotdog.height() + 5;}
+            width() {return thisCanvas.scoreSheet.width();}
+            height() {return 24;}
+            container() {return document.getElementById('inGameDiv');}
+
+            paint() {
+                super.paint();
+                if (!gameState || gameState == GameState.PREGAME || gameState == GameState.POSTGAME || roundNumber >= rounds.length || myPlayer.kibitzer || !options.teams) {
+                    return;
+                }
+
+                this.clear();
+                this.fillContainer();
+
+                let bid = teams[myPlayer.team].members.reduce((b, p) => b + p.bid, 0);
+                let taken = teams[myPlayer.team].members.reduce((t, p) => t + p.taken, 0);
+
+                let leftMessage = 'Team bid: ' + bid;
+                let rightMessage = 'Team taken: ' + taken;
+
+                let handSize = myPlayer.hand.length;
+                if (!myPlayer.trick.isEmpty()) {
+                    handSize++;
+                }
+                let leftColor = bid - taken > handSize ? 'rgb(120, 0, 0)' : 'rgb(0, 0, 120)';
+                let rightColor = bid >= taken ? 'rgb(0, 0, 120)' : 'rgb(120, 0, 0)';
+                if (bid == taken) {
+                    rightColor = 'rgb(0, 120, 0)';
+                }
+
+                drawText(this.ctx, leftMessage, this.width() / 4, this.height() / 2, 1, 1, fontBold, leftColor);
+                drawText(this.ctx, rightMessage, 3 * this.width() / 4, this.height() / 2, 1, 1, fontBold, rightColor);
+            }
+        }
+        this.teamInfo = new TeamInfo();
 
         class LastTrick extends CanvasCard {
             paint() {
@@ -2267,7 +2569,7 @@ class InGameCanvas extends OhcCanvas {
         this.lastTrick.isShown = function () {
             return trickTaken
                 && takenTimer == 1
-                && (gameState == GameState.BIDDING || gameState == GameState.PLAYING);
+                && gameState == GameState.PLAYING;
         };
         this.lastTrick.isEnabled = function () {return gameState == GameState.PLAYING;};
         let oldPaint = this.lastTrick.paint;
@@ -2330,7 +2632,7 @@ class InGameCanvas extends OhcCanvas {
         this.leaveButton.width = () => 105;
         this.leaveButton.height = () => 32;
         this.leaveButton.container = () => document.getElementById('inGameDiv');
-        this.leaveButton.isShown = () => gameState == GameState.BIDDING || gameState == GameState.PLAYING;
+        this.leaveButton.isShown = () => gameState == GameState.BIDDING || gameState == GameState.PLAYING || gameState == GameState.PASSING;
 
         let endB = document.createElement('button');
         endB.innerHTML = 'End game';
@@ -2346,7 +2648,7 @@ class InGameCanvas extends OhcCanvas {
         this.endButton.height = () => 32;
         this.endButton.container = () => document.getElementById('inGameDiv');
         this.endButton.isEnabled = () => myPlayer !== undefined && myPlayer.isHost();
-        this.endButton.isShown = () => gameState == GameState.BIDDING || gameState == GameState.PLAYING;
+        this.endButton.isShown = () => gameState == GameState.BIDDING || gameState == GameState.PLAYING || gameState == GameState.PASSING;
 
         let claimB = document.createElement('button');
         claimB.innerHTML = 'Claim';
@@ -2361,7 +2663,7 @@ class InGameCanvas extends OhcCanvas {
         this.claimButton.width = () => 105;
         this.claimButton.height = () => 32;
         this.claimButton.container = () => document.getElementById('inGameDiv');
-        this.claimButton.isShown = () => gameState == GameState.BIDDING || gameState == GameState.PLAYING;
+        this.claimButton.isShown = () => gameState == GameState.BIDDING || gameState == GameState.PLAYING || gameState == GameState.PASSING;
 
         let chatF = document.createElement('input');
         chatF.type = 'text';
@@ -2389,7 +2691,7 @@ class InGameCanvas extends OhcCanvas {
         this.chatField.container = () => stateDivs[state][gameState];
 
         let chatA = document.createElement('textarea');
-        chatA.readonly = true;
+        chatA.readOnly = true;
         chatA.style.resize = 'none';
         chatA.style.overflowY = 'auto';
         chatA.classList.add(
@@ -2399,7 +2701,7 @@ class InGameCanvas extends OhcCanvas {
         this.chatArea.x = () => cachedWidth - this.chatArea.width() - 10;
         this.chatArea.y = () => Math.max(
             cachedHeight - this.chatField.height() - 15 - maxChatHeight,
-            this.hotdog.y() + this.hotdog.height() + 10
+            (options.teams ? this.teamInfo.y() + this.teamInfo.height() : this.hotdog.y() + this.hotdog.height()) + 10
         );
         this.chatArea.width = () => {
             if (gameState == GameState.PREGAME) {
@@ -2442,6 +2744,39 @@ class InGameCanvas extends OhcCanvas {
             this.divider
         ];
 
+        let passB = document.createElement('button');
+        passB.innerHTML = 'Pass';
+        passB.classList.add(
+            'bg-white', 'rounded-lg', 'border', 'border-black', 'w-5', 'h-5',
+            'font-bold', 'text-md', 'select-none', 'hover:bg-gray-300'
+        );
+        passB.addEventListener('click', () => makePass(pass.list));
+        this.passButton = new WrappedDOMElement(passB);
+        this.passButton.x = () => (cachedWidth - scoreWidth) / 2 - 100;
+        this.passButton.y = () => cachedHeight - 310;
+        this.passButton.width = () => 90;
+        this.passButton.height = () => 30;
+        this.passButton.container = () => document.getElementById('inGameDiv');
+        this.passButton.isShown = () => gameState == GameState.PASSING && !myPlayer.passed && !myPlayer.isKibitzer();
+        this.passButton.isEnabled = () => pass.list.length == pass.toPass;
+        this.passButton.click = () => {}; // so cards don't deselect
+
+        let abstainB = document.createElement('button');
+        abstainB.innerHTML = 'Abstain';
+        abstainB.classList.add(
+            'bg-white', 'rounded-lg', 'border', 'border-black', 'w-5', 'h-5',
+            'font-bold', 'text-md', 'select-none', 'hover:bg-gray-300'
+        );
+        abstainB.addEventListener('click', () => makePass([]));
+        this.abstainButton = new WrappedDOMElement(abstainB);
+        this.abstainButton.x = () => (cachedWidth - scoreWidth) / 2 + 10;
+        this.abstainButton.y = () => cachedHeight - 310;
+        this.abstainButton.width = () => 90;
+        this.abstainButton.height = () => 30;
+        this.abstainButton.container = () => document.getElementById('inGameDiv');
+        this.abstainButton.isShown = () => gameState == GameState.PASSING && !myPlayer.passed && !myPlayer.isKibitzer();
+        this.abstainButton.click = () => {}; // so cards don't deselect
+
         this.postGamePage = new PostGamePage();
 
         // filled out dynamically
@@ -2451,8 +2786,10 @@ class InGameCanvas extends OhcCanvas {
         this.bidButtons = [];
 
         this.interactables = [
-            [this.scoreSheet, this.hotdog],
+            [this.teamsPanel],
+            [this.scoreSheet, this.hotdog, this.teamInfo],
             this.bidButtons,
+            [this.passButton, this.abstainButton],
             this.cardInteractables,
             this.namePlates,
             [this.lastTrick],
@@ -2481,6 +2818,14 @@ class InGameCanvas extends OhcCanvas {
         }
     }
 
+    scoreSheetTeams() {
+        if (gameState != GameState.POSTGAME) {
+            return teams;
+        } else {
+            return this.pgTeams;
+        }
+    }
+
     scoreSheetRounds() {
         if (gameState != GameState.POSTGAME) {
             return rounds;
@@ -2489,8 +2834,20 @@ class InGameCanvas extends OhcCanvas {
         }
     }
 
+    scoreSheetOptions() {
+        if (gameState != GameState.POSTGAME) {
+            return options;
+        } else {
+            return this.pgOptions;
+        }
+    }
+
     clickOnNothing() {
-        clearPreselected(0);
+        if (gameState == GameState.PASSING && !myPlayer.passed) {
+            pass.clear();
+        } else {
+            clearPreselected(0);
+        }
     }
 
     customPaintFirst() {
@@ -2515,7 +2872,7 @@ class InGameCanvas extends OhcCanvas {
     }
 
     adjustDivSizes() {
-        if (gameState == GameState.BIDDING || gameState == GameState.PLAYING) {
+        if (gameState == GameState.BIDDING || gameState == GameState.PLAYING || gameState == GameState.PASSING) {
             if (scoreWidth == 0) {
                 scoreWidth = 450;
             }
@@ -2528,7 +2885,7 @@ class InGameCanvas extends OhcCanvas {
     }
 
     paintTrump() {
-        if (gameState == GameState.PREGAME || gameState == GameState.POSTGAME) {
+        if (gameState == GameState.PREGAME || gameState == GameState.POSTGAME || trump.isEmpty()) {
             return;
         }
 
@@ -2550,10 +2907,11 @@ class InGameCanvas extends OhcCanvas {
             let y = player.getY();
             let pos = player.getJust();
 
+            let separation = 10;
+
             if (player !== myPlayer) {
                 let h = player.getHand().length;
                 let yOffset = 40;
-                let separation = 10;
                 for (let i = 0; i < h; i++) {
                     drawCard(ctx,
                         player.getHand()[i],
@@ -2561,6 +2919,33 @@ class InGameCanvas extends OhcCanvas {
                         y - yOffset,
                         smallCardScale, true, false, -1, undefined
                     );
+                }
+            }
+
+            if (gameState == GameState.PASSING) {
+                if (player.passed) {
+                    let startX = player.getPassX();
+                    let startY = player.getPassY();
+
+                    let passedTo = player.index;
+                    if (player.passedTo != -1) {
+                        passedTo = player.passedTo;
+                    }
+
+                    let endX = players[passedTo].getPassX();
+                    let endY = players[passedTo].getPassY();
+
+                    let x = player.getBidTimer() * endX + (1 - player.getBidTimer()) * startX;
+                    let y = player.getBidTimer() * endY + (1 - player.getBidTimer()) * startY;
+
+                    for (let i = 0; i < player.pass.length; i++) {
+                        drawCard(ctx,
+                            player.pass[i],
+                            x + (i - (player.pass.length - 1) / 2) * separation,
+                            y,
+                            smallCardScale, true, false, -1, undefined
+                        );
+                    }
                 }
             }
         }
@@ -2717,16 +3102,16 @@ class InGameCanvas extends OhcCanvas {
         this.cardInteractables.length = 0;
         for (let i = 0; i < myPlayer.getHand().length; i++) {
             let card = new CanvasCard(myPlayer.getHand()[i], 1, false);
-            card.index = function () {return myPlayer.getHand().indexOf(card.getCard());};
+            card.index = function () {return myPlayer.getHand().indexOf(this.getCard());};
             card.xCenter = function () {
-                return (cachedWidth - scoreWidth) / 2 + card.index() * cardSeparation
+                return (cachedWidth - scoreWidth) / 2 + this.index() * cardSeparation
                         - (myPlayer.getHand().length - 1) * cardSeparation / 2;
             };
             card.yCenter = function () {
-                return cachedHeight - handYOffset - (this.preselection != -1 ? preselectedCardYOffset : 0);
+                return cachedHeight - handYOffset - (this.preselection != -1 || pass && pass.isSelected(this.getCard()) ? preselectedCardYOffset : 0);
             };
             card.yPaintOffset = function () {
-                return card.isMoused() ? -10 : 0;
+                return (card.isMoused() ? -10 : 0) + (pass && pass.isSelected(this.getCard()) ? -10 : 0);
             };
             card.isEnabled = function () {
                 if (gameState == GameState.BIDDING) {
@@ -2751,6 +3136,12 @@ class InGameCanvas extends OhcCanvas {
                         playCard(this);
                     } else {
                         return;
+                    }
+                } else if (gameState == GameState.PASSING && !myPlayer.passed) {
+                    if (pass.isSelected(this.getCard())) {
+                        pass.deselect(this.getCard());
+                    } else {
+                        pass.select(this.getCard());
                     }
                 } else {
                     if (this.preselection == -1) {
@@ -2810,30 +3201,16 @@ class InGameCanvas extends OhcCanvas {
             player.bidQs = player.bidQs.map(r => r.map(pr => 100 * pr))
             player.hands = player.hands.map(h => h.map(c => new Card(c.num, c.suit)));
             player.plays = player.plays.map(h => h.map(c => new Card(c.num, c.suit)));
-            player.makingProbs = player.makingProbs.map(r => r.map(t => t.map(pair => [new Card(pair[0].num, pair[0].suit), pair[1]])))
+            player.makingProbs = player.makingProbs.map(r => r.map(t => t.map(pair => [new Card(pair[0].num, pair[0].suit), pair[1]])));
         }
 
-        this.pgPlayers = data.players;
-        this.pgRounds = data.rounds;
+        data.teams.forEach(t => t.members = t.members.map(i => data.players[i]));
 
-        let sortedScores = data.players.map(function (p) {return {
-            name: p.name,
-            index: p.index,
-            score: p.scores.length == 0 ? 0 : p.scores[p.scores.length - 1]
-        };});
-        sortedScores.sort((p1, p2) => Math.sign(p2.score - p1.score));
-        this.postGamePage.setSortedScores(sortedScores);
-        this.postGamePage.setAllScores(
-            data.players.map(function (p) {
-                return {
-                    name: p.name,
-                    index: p.index,
-                    scores: [0].concat(p.scores),
-                    wbProbs: [100 / players.length].concat(p.wbProbs.map(x => 100 * x))
-                };
-            }),
-            [''].concat(data.rounds.map(r => r.handSize))
-        );
+        this.pgPlayers = data.players;
+        this.pgTeams = data.teams;
+        this.pgRounds = data.rounds;
+        this.pgOptions = data.options;
+
         this.postGamePage.setData(data);
     }
 
@@ -2844,12 +3221,14 @@ class InGameCanvas extends OhcCanvas {
 }
 
 function canPlayThis(card) {
-    if (turn == leader) {
+    return canPlay.filter(c => c.matches(card)).length > 0;
+    /*if (turn == leader) {
         return true;
     } else {
-        let led = players[leader].getTrick().suit;
+        let followIndex = mode == 'Oregon Hearts' ? (myPlayer.index + players.length - 1) % players.length : leader;
+        let led = players[followIndex].getTrick().suit;
         return card.suit == led || myPlayer.getHand().filter(c => c.suit == led).length == 0;
-    }
+    }*/
 }
 
 function clearPreselected(index) {
@@ -2880,7 +3259,11 @@ class TimerQueue {
         }
 
         if (toFront) {
-            this.entries.unshift(entry);
+            if (this.entries.length == 0 || this.entries.firstAction) {
+                this.entries.unshift(entry);
+            } else {
+                this.entries.splice(1, 0, entry);
+            }
         } else {
             this.entries.push(entry);
         }
@@ -2931,9 +3314,9 @@ class TimerEntry {
     onLastAction() {}
 }
 
-function pushBasicTimer(func) {
-    let te = new TimerEntry(0);
-    te.onFirstAction = func;
+function pushBasicTimer(func, delay) {
+    let te = new TimerEntry(delay ? delay : 0);
+    te.onLastAction = func;
     canvas.pushTimerEntry(te);
 }
 
@@ -2961,6 +3344,23 @@ function animatePlay(index) {
         players[index].setTrickTimer(t);
     }
     canvas.pushTimerEntry(animateTe);
+}
+
+function animatePass() {
+    let stayTe1 = new TimerEntry(bidStayTime);
+    canvas.pushTimerEntry(stayTe1);
+
+    let animateTe = new TimerEntry(animationTime);
+    animateTe.onAction = function () {
+        let t = Math.min(this.elapsedTime / animationTime, 1);
+        for (const player of players) {
+            player.setBidTimer(t);
+        }
+    }
+    canvas.pushTimerEntry(animateTe);
+
+    let stayTe2 = new TimerEntry(bidStayTime);
+    canvas.pushTimerEntry(stayTe2);
 }
 
 function animateTrickTake(index) {
@@ -3049,6 +3449,10 @@ class Card {
         }
     }
 
+    toDict() {
+        return {num: this.num, suit: this.suit};
+    }
+
     isEmpty() {
         return this.num == 0;
     }
@@ -3104,18 +3508,21 @@ class Card {
  * states
  */
 var ClientStateEnum = function() {
-	this.LOGIN_MENU = 0;
-    this.MAIN_MENU = 1;
-    this.IN_MULTIPLAYER_GAME = 2;
-    this.MULTIPLAYER_POST_GAME = 3;
-    this.FILE_VIEWER = 4;
+    this.LOADING = 0;
+	this.LOGIN_MENU = 1;
+    this.MAIN_MENU = 2;
+    this.MODE_SELECT = 3;
+    this.IN_MULTIPLAYER_GAME = 4;
+    this.MULTIPLAYER_POST_GAME = 5;
+    this.FILE_VIEWER = 6;
 };
 var GameStateEnum = function() {
     this.PREGAME = 0;
     this.BIDDING = 1;
     this.PLAYING = 2;
     this.POSTGAME = 3;
-}
+    this.PASSING = 4;
+};
 
 /*
  * options
@@ -3159,6 +3566,7 @@ class ClientPlayer {
         this.kibitzer = data.kibitzer;
         this.replacedByRobot = data.replacedByRobot;
         this.index = data.index;
+        this.team = data.team;
         this.bid = data.bid;
         this.bidded = data.bidded;
         this.taken = data.taken;
@@ -3173,70 +3581,54 @@ class ClientPlayer {
     updateExtra(hand, bids, takens, scores) {
         this.hand = hand.map(c => new Card(c.num, c.suit));
         this.bids = bids;
-        this.takens = takens;
         this.scores = scores;
     }
 
     setName(name) {
         this.name = name;
     }
-
     getName() {
         return this.name;
     }
-
     setId(id) {
         this.id = id;
     }
-
     getId() {
         return this.id;
     }
-
     setHost(host) {
         this.host = host;
     }
-
     isHost() {
         return this.host;
     }
-
     isDisconnected() {
         return this.disconnected;
     }
-
     setKibitzer(kib) {
         this.kibitzer = kib;
     }
-
     isKibitzer() {
         return this.kibitzer;
     }
-
     setIndex(index) {
         this.index = index;
     }
-
     getIndex() {
         return this.index;
     }
-
     setHand(hand) {
         this.hand = hand;
     }
-
     getHand(hand) {
         return this.hand;
     }
-
     setBid(bid) {
         this.bid = bid;
     }
-
     getBid() {
         return this.bid;
     }
-
     hasBid() {
         return this.bidded;
     }
@@ -3247,6 +3639,41 @@ class ClientPlayer {
         this.bids.push(bid);
     }
 
+    addPass(cards) {
+        this.pass = cards;
+        this.passed = true;
+
+        if (this == myPlayer) {
+            pass.clear();
+            for (const card of cards) {
+                for (let i = 0; i < this.hand.length; i++) {
+                    if (this.hand[i].matches(card)) {
+                        this.hand.splice(i, 1);
+                    }
+                }
+
+                for (let i = 0; i < canvas.cardInteractables.length; i++) {
+                    if (canvas.cardInteractables[i].getCard().matches(card)) {
+                        canvas.cardInteractables.splice(i, 1);
+                    }
+                }
+            }
+        } else {
+            for (const card of cards) {
+                let remove = -1;
+                for (let i = 0; i < this.hand.length; i++) {
+                    if (this.hand[i].matches(card)) {
+                        remove = i;
+                    }
+                }
+                if (remove == -1) {
+                    remove = 0;
+                }
+                this.hand.splice(remove, 1);
+            }
+        }
+    }
+
     addScore(score) {
         this.score = score;
         this.scores.push(score);
@@ -3255,39 +3682,30 @@ class ClientPlayer {
     setBidTimer(t) {
         this.bidTimer = t;
     }
-
     getBidTimer() {
         return this.bidTimer;
     }
-
     getTrick() {
         return this.trick;
     }
-
     getLastTrick() {
         return this.lastTrick;
     }
-
     setTrickTimer(t) {
         this.trickTimer = t;
     }
-
     getTrickTimer() {
         return this.trickTimer;
     }
-
     setTrickRad(r) {
         this.trickRad = r;
     }
-
     getTrickRad() {
         return this.trickRad;
     }
-
     getTaken() {
         return this.taken;
     }
-
     incTaken() {
         this.taken++;
     }
@@ -3303,13 +3721,8 @@ class ClientPlayer {
     getScores() {
         return this.scores;
     }
-
     getBids() {
         return this.bids;
-    }
-
-    getTakens() {
-        return this.takens;
     }
 
     addPlay(card) {
@@ -3335,7 +3748,7 @@ class ClientPlayer {
                 canvas.cardInteractables.splice(cardJustPlayed, 1);
             } else {
                 for (let i = 0; i < canvas.cardInteractables.length; i++) {
-                    if (canvas.cardInteractables[i].matches(card)) {
+                    if (canvas.cardInteractables[i].getCard().matches(card)) {
                         canvas.cardInteractables.splice(i, 1);
                     }
                 }
@@ -3359,9 +3772,7 @@ class ClientPlayer {
         this.trick = new Card();
         this.lastTrick = new Card();
         this.bids = [];
-        this.takens = [];
         this.scores = [];
-        this.hands = [];
     }
 
     newRoundReset() {
@@ -3370,6 +3781,9 @@ class ClientPlayer {
         this.bidded = false;
         this.trick = new Card();
         this.lastTrick = new Card();
+        this.pass = [];
+        this.passed = false;
+        this.passedTo = -1;
 
         this.bidTimer = 0;
         this.trickTimer = 0;
@@ -3395,22 +3809,42 @@ class ClientPlayer {
     }
 }
 
+class ClientTeam {
+    constructor(number) {
+        this.number = number;
+        this.name = '';
+        this.members = [];
+    }
+
+    bid() {
+        return this.members.filter(p => p.bidded).map(p => p.bid).reduce((a, b) => a + b, 0);
+    }
+
+    taken() {
+        return this.members.map(p => p.taken).reduce((a, b) => a + b, 0);
+    }
+}
+
 function updatePlayersOnCanvas() {
     setPlayerPositions();
     if (stateCanvas === canvas) {
         canvas.resetNamePlatesAndRobotButtons();
     }
 
+    igKibitzer.checked = myPlayer !== undefined && myPlayer.isKibitzer();
+
     if (!myPlayer.isHost()) {
         igRobots.disabled = true;
         igDoubleDeck.disabled = true;
         igTeams.disabled = true;
         disableButton(igStart);
+        disableButton(document.getElementById('igRandomizeTeams'));
     } else {
         igRobots.disabled = false;
         igDoubleDeck.disabled = false;
         igTeams.disabled = false;
         enableButton(igStart);
+        enableButton(document.getElementById('igRandomizeTeams'));
     }
 }
 
@@ -3433,25 +3867,62 @@ function setPlayerPositions() {
             player.getJust = function () {return 0;};
             player.getTakenX = function () {return player.getX() + 20;};
             player.getTakenY = function () {return player.getY() + 50;};
+            player.getPassX = () => player.getX() + 250;
+            player.getPassY = () => player.getY();
         } else if (index < cut2) {
             player.getX = function () {return (cachedWidth - scoreWidth) * (index - cut1 + 1) / (cut2 - cut1 + 1);};
             player.getY = function () {return 85;};
             player.getJust = function () {return 1;};
             player.getTakenX = function () {return player.getX() + 110;};
             player.getTakenY = function () {return player.getY() - 35;};
+            player.getPassX = () => player.getX();
+            player.getPassY = () => player.getY() + 100;
         } else if (index < N - 1) {
             player.getX = function () {return cachedWidth - scoreWidth - 10;};
             player.getY = function () {return cachedHeight * (index - cut2 + 1) / (N - 1 - cut2 + 1);};
             player.getJust = function () {return 2;};
             player.getTakenX = function () {return player.getX() - 90;};
             player.getTakenY = function () {return player.getY() + 50;};
+            player.getPassX = () => player.getX() - 250;
+            player.getPassY = () => player.getY();
         } else {
             player.getX = function () {return (cachedWidth - scoreWidth) / 2;};
             player.getY = function () {return cachedHeight - 20;};
             player.getJust = function () {return 1;};
             player.getTakenX = function () {return player.getX() + 260;};
             player.getTakenY = function () {return player.getY() - 50;};
+            player.getPassX = () => player.getX();
+            player.getPassY = () => player.getY() - 300;
         }
+    }
+}
+
+class Pass {
+    constructor() {
+        this.clear();
+        this.toPass = [0, 0, 0, 4, 3, 2, 2, 2, 1][players.length];
+    }
+
+    clear() {
+        this.list = [];
+        this.set = new Set();
+    }
+
+    deselect(card) {
+        this.list = this.list.filter(c => c !== card);
+        this.set.delete(card);
+    }
+
+    select(card) {
+        while (this.list.length >= this.toPass) {
+            this.deselect(this.list[0]);
+        }
+        this.list.push(card);
+        this.set.add(card);
+    }
+
+    isSelected(card) {
+        return this.set.has(card);
     }
 }
 
@@ -3512,23 +3983,67 @@ window.addEventListener('wheel', function (e) {
 });
 
 function execute() {
-    socket = io.connect("http://cam.yu-kang.com");
-    setSocketCallbacks();
+    baseUrl = 'http://73.238.135.14:6066';
+    socket = io.connect(baseUrl);
 
     frame = document.getElementById("canvas");
     ctx = frame.getContext("2d");
 
     stateDivs = [
+        [document.getElementById('loadingDiv')],
         [document.getElementById("loginMenuDiv")],
         [document.getElementById("mainMenuDiv")],
+        [document.getElementById("modeSelectDiv")],
         [
             document.getElementById("preGameDiv"),
             document.getElementById("inGameDiv"),
             document.getElementById("inGameDiv"),
-            document.getElementById("postGameDiv")
+            document.getElementById("postGameDiv"),
+            document.getElementById("inGameDiv")
         ]
     ];
 
+    ClientState = new ClientStateEnum();
+
+    loadingCanvas = new PlainCanvas();
+    changeState(ClientState.LOADING);
+
+    const urlParams = new URLSearchParams(window.location.search);
+    autojoinId = urlParams.get('gameid');
+    if (autojoinId) {
+        autojoinId = parseInt(autojoinId);
+    }
+
+    //setCookie('username', 'soup' + Math.random().toFixed(3), 1);
+    username = getCookie('username');
+
+    setSocketCallbacks();
+    loadVars();
+    addEventListeners();
+
+    GameState = new GameStateEnum();
+
+    loginMenuCanvas = new PlainCanvas();
+	mainMenuCanvas = new MainMenuCanvas();
+    modeSelectCanvas = new PlainCanvas();
+	canvas = new InGameCanvas();
+
+    debugExecute();
+
+    if (username && autojoinId) {
+        autojoin(username, autojoinId);
+        debugJoined();
+    } else if (username) {
+        connect(username);
+        debugConnected();
+    } else {
+        changeState(ClientState.LOGIN_MENU);
+    }
+
+	paint();
+}
+
+function addEventListeners() {
     // login
     lmUsername = document.getElementById("lmUsername");
     lmUsername.addEventListener('keydown', e => {
@@ -3539,6 +4054,17 @@ function execute() {
 
     lmConnect = document.getElementById("lmConnect");
     lmConnect.addEventListener('click', () => {connect(lmUsername.value);});
+
+    // mode select
+    document.getElementById("msOhHell").addEventListener('click', () => {
+        createGame('Oh Hell');
+    });
+    document.getElementById("msOregonHearts").addEventListener('click', () => {
+        createGame('Oregon Hearts');
+    });
+    document.getElementById("msBack").addEventListener('click', () => {
+        changeState(ClientState.MAIN_MENU);
+    });
 
     // in game
     igName = document.getElementById("igName");
@@ -3585,24 +4111,30 @@ function execute() {
     igBack = document.getElementById("igBack");
     igBack.addEventListener('click', () => {leaveGame();});
 
-    //igLeftDiv = document.getElementById("igLeftDiv");
-    //igRightDiv = document.getElementById("igRightDiv");
-
-    document.getElementById("igBack3").addEventListener('click', () => {leaveGame();});
-
-    //igScoreSheetContainer = document.getElementById("igScoreSheetContainer");
-    //igRightSpacerDiv = document.getElementById("igRightSpacerDiv");
-    //igChatDiv = document.getElementById("igChatDiv");
-
-    //igHotdogContainer = document.getElementById("igHotdogContainer");
+    document.getElementById("igBack3").addEventListener('click', () => {
+        if (autojoinId) {
+            leaveGame();
+        } else {
+            // viewing a saved game
+            document.location = baseUrl;
+        }
+    });
+    document.getElementById("igDownload").addEventListener('click', () => download());
 
     igLobby.addEventListener('click', () => {
         changeGameState(GameState.PREGAME);
     });
+}
 
+function loadVars() {
     games = [];
 
     players = [];
+    teams = [];
+    for (let i = 0; i < 10; i++) {
+        teams.push(new ClientTeam(i));
+    }
+    options = new Options();
     rounds = [];
     takenTimer = 1;
     trickTaken = false;
@@ -3619,6 +4151,7 @@ function execute() {
     bidStayTime = 1500;
     trickStayTime = 1500;
     messageTime = 2000;
+    robotDelay = 500;
     pokeTime = 25000;
     takenXSeparation = 10;
     takenYSeparation = 5;
@@ -3641,15 +4174,6 @@ function execute() {
         'orange', 'pink', 'yellow', 'gray', 'black'
     ];
 
-	ClientState = new ClientStateEnum();
-    GameState = new GameStateEnum();
-
-    loginMenuCanvas = new PlainCanvas();
-	mainMenuCanvas = new MainMenuCanvas();
-	canvas = new InGameCanvas();
-
-    options = new Options();
-
     deckImg = document.getElementById('deckimg');
     deckImgSmall = document.getElementById('deckimgsmall');
     cardWidth = deckImg.width / 9;
@@ -3659,12 +4183,28 @@ function execute() {
     maxWid = 9 * 10 + cardWidthSmall;
 
     pokeSound = new Audio('./resources/shortpoke.wav');
+}
 
-	changeState(ClientState.LOGIN_MENU);
+function getCookie(cname) {
+    let name = cname + "=";
+    let decodedCookie = decodeURIComponent(document.cookie);
+    let ca = decodedCookie.split(';');
+    for (let c of ca) {
+        while (c.charAt(0) == ' ') {
+            c = c.substring(1);
+        }
+        if (c.indexOf(name) == 0) {
+            return c.substring(name.length, c.length);
+        }
+    }
+    return "";
+}
 
-	paint();
-
-    debugExecute();
+function setCookie(cname, cvalue, exdays) {
+    const d = new Date();
+    d.setTime(d.getTime() + (exdays * 24 * 60 * 60 * 1000));
+    let expires = "expires=" + d.toUTCString();
+    document.cookie = cname + "=" + cvalue + ";" + expires + ";path=/";
 }
 
 function changeState(newState) {
@@ -3672,13 +4212,24 @@ function changeState(newState) {
         stateCanvas.timerQueue.clear();
     }
 
+    let defaultDiv = undefined;
     switch (newState) {
+    case ClientState.LOADING:
+        stateCanvas = loadingCanvas;
+        defaultDiv = stateDivs[newState][0];
+        break;
 	case ClientState.LOGIN_MENU:
         stateCanvas = loginMenuCanvas;
+        defaultDiv = stateDivs[newState][0];
         break;
     case ClientState.MAIN_MENU:
         stateCanvas = mainMenuCanvas;
+        defaultDiv = stateDivs[newState][0];
         stateCanvas.refreshGames();
+        break;
+    case ClientState.MODE_SELECT:
+        stateCanvas = modeSelectCanvas;
+        defaultDiv = stateDivs[newState][0];
         break;
 	case ClientState.IN_MULTIPLAYER_GAME:
         igName.value = username;
@@ -3693,17 +4244,18 @@ function changeState(newState) {
         }
     }
 	state = newState;
-    stateDivs[state][0].style.display = 'flex';
+    if (defaultDiv) {
+        defaultDiv.style.display = 'flex';
+    }
 }
 
 function changeGameState(newState) {
     switch (newState) {
 	case GameState.PREGAME:
-        igKibitzer.checked = false;
-        igRobots.value = 0;
-        igDoubleDeck.checked = false;
-        igTeams.checked = false;
-        options = new Options();
+        igKibitzer.checked = myPlayer !== undefined && myPlayer.isKibitzer();
+        igRobots.value = options.robots;
+        igDoubleDeck.checked = options.D == 2;
+        igTeams.checked = options.teams;
 
         scoreWidth = 0;
 		break;
@@ -3739,6 +4291,41 @@ function updateElementSizes() {
     frame.height = cachedHeight;
 }
 
+function download() {
+    window.open(`${baseUrl}/cached_games/${autojoinId}.ohw`, 'Download');
+}
+
+function openFile() {
+    var input = document.createElement('input');
+    input.type = 'file';
+
+    input.onchange = e => {
+       var file = e.target.files[0];
+       var reader = new FileReader();
+       reader.readAsText(file, 'UTF-8');
+       reader.onload = readerEvent => {
+          let data = JSON.parse(readerEvent.target.result);
+
+          if (data === undefined) {
+              alert('Unable to open file');
+              return;
+          }
+
+          mode = data.mode;
+          scoreWidth = 450;
+          changeState(ClientState.IN_MULTIPLAYER_GAME);
+          changeGameState(GameState.POSTGAME);
+          autojoinId = undefined;
+          disableButton(document.getElementById('igLobby'));
+          disableButton(document.getElementById('igDownload'));
+          canvas.loadPostGame(data);
+          myPlayer = undefined;
+       }
+    }
+
+    input.click();
+}
+
 /*
  * socket
  */
@@ -3746,6 +4333,9 @@ function setSocketCallbacks() {
     // In
     socket.on('loginconfirmed', function () {
         changeState(ClientState.MAIN_MENU);
+        if (autojoinId) {
+            joinGame(autojoinId);
+        }
     });
     socket.on('logoutconfirmed', () => {
         changeState(ClientState.LOGIN_MENU);
@@ -3753,11 +4343,20 @@ function setSocketCallbacks() {
     socket.on('gamelist', data => {
         games = data.games;
     });
-    socket.on('join', function () {
-        scoreWidth = 0;
-        changeState(ClientState.IN_MULTIPLAYER_GAME);
-        changeGameState(GameState.PREGAME);
-        myPlayer = undefined;
+    socket.on('gamecreated', data => {
+        if (data.mp) {
+            reloadWithId(data.id);
+        } else {
+            joinGame(data.id);
+        }
+    });
+    socket.on('join', function (data) {
+        mode = data.mode;
+        autojoinId = data.id;
+        goToGame();
+    });
+    socket.on('gamejoinerror', () => {
+        document.location = baseUrl;
     });
     socket.on('options', function (data) {
         pushBasicTimer(function () {
@@ -3765,12 +4364,11 @@ function setSocketCallbacks() {
             igRobots.value = options.robots;
             igDoubleDeck.checked = options.D == 2;
             igTeams.checked = options.teams;
+            document.getElementById('teamsDiv').style.display = options.teams ? 'inline' : 'none';
         });
     });
     socket.on('kick', () => {
-        changeState(ClientState.MAIN_MENU);
-        players = [];
-        canvas.cleanup();
+        document.location = baseUrl;
     });
     socket.on('addplayers', function (data) {
         pushBasicTimer(function () {
@@ -3808,11 +4406,9 @@ function setSocketCallbacks() {
     });
     socket.on('updateplayers', function (data) {
         pushBasicTimer(function () {
-            for (const dict of data.players) {
-                for (const player of data.players) {
-                    if (!player.kibitzer) {
-                        players[player.index].update(player);
-                    }
+            for (const player of data.players) {
+                if (!player.kibitzer) {
+                    players[player.index].update(player);
                 }
             }
 
@@ -3886,6 +4482,8 @@ function setSocketCallbacks() {
                         player.setTrickTimer(1);
                     }
                 }
+            } else if (data.state == GameState.PASSING) {
+                pass = new Pass();
             }
 
             cardJustPlayed = undefined;
@@ -3906,17 +4504,36 @@ function setSocketCallbacks() {
 
             trickTaken = false;
 
-            for (let i = 0; i < data.length - 1; i++) {
-                players[i].setHand(data[i].map(c => new Card(c.num, c.suit)));
+            for (let i = 0; i < players.length; i++) {
+                players[i].setHand(data.hands[i].map(c => new Card(c.num, c.suit)));
             }
-            trump = data[data.length - 1][0];
+            trump = data.trump[0];
             trump = new Card(trump.num, trump.suit);
 
-            showOneCard = data[0].length > 1
+            showOneCard = data.hands[0].length > 1
                         || myPlayer.getIndex() != dealer
                         || myPlayer.isKibitzer();
 
             if (!myPlayer.isKibitzer()) {
+                canvas.makeHandInteractables();
+            }
+        });
+    });
+    socket.on('performpass', function (data) {
+        pushBasicTimer(function () {
+            for (let i = 0; i < players.length; i++) {
+                players[i].pass = data.pass[i].map(c => new Card(c.num, c.suit));
+                players[i].passedTo = data.passedTo[i];
+            }
+        });
+        animatePass(data.passedFrom);
+        pushBasicTimer(function () {
+            for (let i = 0; i < players.length; i++) {
+                players[i].setHand(data.hands[i].map(c => new Card(c.num, c.suit)));
+            }
+
+            if (!myPlayer.isKibitzer()) {
+                canvas.removeHandInteractables();
                 canvas.makeHandInteractables();
             }
         });
@@ -3953,12 +4570,19 @@ function setSocketCallbacks() {
 
             canvas.removeBidInteractables();
 
-            if (turn == myPlayer.getIndex() && preselected.length > 0) {
-                if (canPlayThis(preselected[0].getCard())) {
-                    playCard(preselected[0]);
-                    shiftPreselected();
+            if (turn == myPlayer.getIndex()) {
+                if (data.canPlay) {
+                    canPlay = data.canPlay.map(c => new Card(c.num, c.suit));
                 } else {
-                    clearPreselected(0);
+                    canPlay = [];
+                }
+                if (preselected.length > 0) {
+                    if (canPlayThis(preselected[0].getCard())) {
+                        playCard(preselected[0]);
+                        shiftPreselected();
+                    } else {
+                        clearPreselected(0);
+                    }
                 }
             }
 
@@ -3970,6 +4594,17 @@ function setSocketCallbacks() {
             players[turn].startPokeTime();
         });
     });
+    socket.on('pass', function (data) {
+        pushBasicTimer(function () {
+            changeGameState(GameState.PASSING);
+            turn = -1;
+            pass = new Pass();
+
+            for (let i = 0; i < players.length; i++) {
+                players[i].startPokeTime();
+            }
+        });
+    });
     socket.on('bidreport', function (data) {
         pushBasicTimer(function () {
             players[data.index].addBid(data.bid);
@@ -3977,32 +4612,44 @@ function setSocketCallbacks() {
             if (!players.some(p => !p.hasBid())) {
                 animateBids();
             }
-        });
+        }, !data.human ? robotDelay : 0);
     });
     socket.on('playreport', function (data) {
         pushBasicTimer(function () {
+            if (data.isLead) {
+                leader = data.index;
+            }
+
             players[data.index].addPlay(new Card(data.card.num, data.card.suit));
-        });
+        }, !data.human ? robotDelay : 0);
         animatePlay(data.index);
+    });
+    socket.on('passreport', function (data) {
+        pushBasicTimer(function () {
+            players[data.index].stopPokeTime();
+            players[data.index].addPass(data.cards.map(c => new Card(c.num, c.suit)));
+        }, 0);
     });
     socket.on('trickwinner', function (data) {
         animateTrickTake(data.index);
     });
     socket.on('scoresreport', function (data) {
-        if (!myPlayer.isKibitzer()) {
+        if (!myPlayer.isKibitzer() && mode == 'Oh Hell') {
             showResultMessage();
         }
         pushBasicTimer(function () {
             for (let i = 0; i < players.length; i++) {
                 players[i].addScore(data.scores[i]);
             }
+            roundNumber++;
         });
-        roundNumber++;
     });
     socket.on('postgame', function (data) {
         pushBasicTimer(function () {
             changeGameState(GameState.POSTGAME);
             canvas.loadPostGame(data);
+            enableButton(document.getElementById('igLobby'));
+            enableButton(document.getElementById('igDownload'));
         });
     });
     socket.on('chat', data => {
@@ -4036,6 +4683,14 @@ function setSocketCallbacks() {
     socket.on('claimresult', data => {
         showClaimMessage(data);
     });
+    socket.on('updateteams', function (data) {
+        pushBasicTimer(function () {
+            for (const team of data.teams) {
+                teams[team.number].name = team.name;
+                teams[team.number].members = team.members.map(i => players[i]);
+            }
+        });
+    });
 }
 
 // Out
@@ -4045,24 +4700,43 @@ function connect(uname) {
     }
 
     username = uname;
+    setCookie('username', uname, 30);
     socket.emit('login', {id: uname});
 }
 function logout() {
     socket.emit('logout');
+    setCookie('username', '', 0);
+}
+
+function autojoin(uname, id) {
+    socket.emit('autojoin', {userId: uname, gameId: id});
 }
 
 function requestGameList() {
     socket.emit('gamelist');
 }
 
-function createMpGame() {
-    socket.emit('creatempgame');
+function goToModeSelect(mp) {
+    multiplayer = mp;
+    if (!mp && options.robots == 0) {
+        options.robots = 4;
+    }
+    changeState(ClientState.MODE_SELECT);
 }
-function createSpGame() {
-    socket.emit('createspgame');
+function createGame(mode) {
+    socket.emit('creategame', {mode: mode, multiplayer: multiplayer, options: options});
 }
-function joinMpGame(id) {
-    socket.emit('joinmpgame', id);
+function joinGame(id) {
+    socket.emit('joingame', id);
+}
+function reloadWithId(id) {
+    document.location.search = `gameid=${id}`;
+}
+function goToGame() {
+    scoreWidth = 0;
+    changeState(ClientState.IN_MULTIPLAYER_GAME);
+    changeGameState(GameState.PREGAME);
+    myPlayer = undefined;
 }
 function leaveGame() {
     socket.emit('leavegame');
@@ -4093,6 +4767,9 @@ function playCard(canvasCard) {
     let card = canvasCard.getCard();
     socket.emit('play', {card: {num: card.num, suit: card.suit}});
 }
+function makePass(cards) {
+    socket.emit('pass', {cards: cards.map(c => c.toDict())});
+}
 function sendChat(text) {
     socket.emit('chat', text);
 }
@@ -4112,20 +4789,34 @@ function respondToClaim(accept) {
     socket.emit('claimresponse', accept);
 }
 
+function reteam(index, team) {
+    socket.emit('reteam', {index: index, team: team});
+}
+function scrambleTeams() {
+    socket.emit('scrambleteams');
+}
+
 // debug
 function debugExecute() {
-    animationTime = 1;
+    /*animationTime = 1;
     bidStayTime = 0;
     trickStayTime = 0;
     messageTime = 0;
+    robotDelay = 0;*/
+}
 
-    connect('soup' + Math.random());
+function debugConnected() {
+    /*multiplayer = true;
+    createGame('Oh Hell');*/
+}
 
-    createMpGame();
-
-    options.robots = 6;
+function debugJoined() {
+    /*options.robots = 6;
     options.D = 2;
-    sendOptionsUpdate();
+    options.teams = true;
+    sendOptionsUpdate();*/
+
+    //startGame();
 }
 
 function debugAddPlayers() {

@@ -7,13 +7,14 @@
         <style>
             * {padding: 0; margin: 0;}
             canvas {background: #eee; display: block; margin: 0 auto;}
+            body {background-image: "resources/tableimage.png";}
             ::-webkit-scrollbar {width: 3px;}
             ::-webkit-scrollbar-thumb {background: #888;}
         </style>
         <script src="/socket.io/socket.io.js"></script>
     </head>
     <body>
-        <div class="fixed inset-0 flex items-center justify-center" style="display:flex;" id="miscOverlay"></div>
+        <div class="fixed inset-0 flex items-center justify-center" style="display:none;" id="loadingDiv"></div>
 
         <div class="fixed inset-0 flex items-center justify-center" style="display:none;" id="loginMenuDiv">
             <div class="bg-white bg-opacity-50 max-w-sm w-full h-auto p-6 rounded-3xl border-black border text-center">
@@ -45,7 +46,15 @@
             </div>
         </div>
 
-        <div class="fixed inset-0 flex items-center justify-center" style="display:none;" id="preGameDiv">
+        <div class="fixed inset-0 flex items-center justify-center" style="display:none;" id="modeSelectDiv">
+            <div class="bg-white bg-opacity-50 w-42 h-auto p-3 space-y-3 rounded-2xl border-black border">
+                <button class="bg-green-300 rounded-lg border border-black w-full h-10 font-bold text-md select-none hover:bg-green-500" id="msOhHell">Oh Hell</button>
+                <button class="bg-red-300 rounded-lg border border-black w-full h-10 font-bold text-md select-none hover:bg-red-500" id="msOregonHearts">Oregon Hearts</button>
+                <button class="bg-white rounded-lg border border-black w-full h-10 font-bold text-md select-none hover:bg-gray-300" id="msBack">Back</button>
+            </div>
+        </div>
+
+        <div class="fixed inset-0 flex items-center justify-center space-x-1" style="display:none;" id="preGameDiv">
             <div class="bg-white bg-opacity-70 max-w-md w-full h-2/5 p-6 rounded-3xl border-black border text-center">
                 <div class="w-full mt-2" style="display:table;">
                     <div class="w-full" style="display:table-row;">
@@ -80,6 +89,13 @@
                     </div>
                 </div>
             </div>
+            <div class="bg-white bg-opacity-70 w-60 h-2/5 p-3 rounded-3xl border-black border flex items-center justify-center space-y-1" style="display:none;" id="teamsDiv">
+                <div class="p-0 w-full h-auto flex" id="igTeamsContainer">
+                    <canvas class="p-0 bg-transparent" id="igTeamsCanvas"></canvas>
+                </div>
+                <button class="bg-white rounded-lg border border-black w-full h-6 font-bold text-md select-none hover:bg-gray-300" id="igNewTeam">Make new team</button>
+                <button class="bg-white rounded-lg border border-black w-full h-6 font-bold text-md select-none hover:bg-gray-300" id="igRandomizeTeams">Randomize teams</button>
+            </div>
         </div>
 
         <div class="fixed inset-0 flex items-center justify-center" style="display:none;" id="inGameDiv">
@@ -97,6 +113,9 @@
             </div>
             <div class="p-0 bg-white rounded-lg border-black border" id="igHotdogContainer">
                 <canvas class="p-0 bg-transparent" id="igHotdogCanvas"></canvas>
+            </div>
+            <div class="p-0 bg-white rounded-lg border-black border" id="igTeamInfoContainer">
+                <canvas class="p-0 bg-transparent" id="igTeamInfoCanvas"></canvas>
             </div>
         </div>
 

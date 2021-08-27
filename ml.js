@@ -94,14 +94,24 @@ class BasicVector {
 
 class SparseVector {
     constructor(entries, size) {
+        this.chunks = [];
         if (arguments.length > 0) {
             this.entries = entries;
             this.totalSize = size;
+            this.chunks.push({
+                feature: 'preset',
+                offset: 0,
+                val: 0,
+                min: 0,
+                max: this.totalSize,
+                isDiscrete: false
+            });
         } else {
             this.entries = [];
             this.totalSize = 0;
         }
     }
+
     size() {
         return this.totalSize;
     }
@@ -111,8 +121,8 @@ class SparseVector {
     }
 
     toArray() {
-        let arr = new Array(totalSize).fill(0);
-        for (const entry of entries) {
+        let arr = new Array(this.totalSize).fill(0);
+        for (const entry of this.entries) {
             arr[entry.key] = entry.value;
         }
         return arr;
@@ -170,16 +180,53 @@ class SparseVector {
     }
 
     addOneHot(feature, val, min, max, debug) {
-        if (val < min || val > max) {
-            throw 'Invalid value ' + val + ' for one-hot in [' + min + ', ' + max + '].';
+        if (val < min || val > max || val === undefined) {
+            throw 'Invalid value ' + val + ' for one-hot in [' + min + ', ' + max + '] for feature ' + feature + '.';
         }
         if (debug) {
-            debug(feature + ' ' + val + ' ' + min + ' ' + max);
+            console.log(feature + ' ' + val + ' ' + min + ' ' + max);
         }
         if (val != min) {
             this.entries.push({key: this.totalSize + val - min - 1, value: 1});
         }
+        this.chunks.push({
+            feature: feature,
+            offset: this.totalSize,
+            val: val,
+            min: min,
+            max: max,
+            isDiscrete: true
+        });
         this.totalSize += max - min;
+    }
+
+    addValue(feature, val) {
+        this.entries.push({key: this.totalSize, value: val});
+        this.chunks.push({
+            feature: feature,
+            offset: this.totalSize,
+            val: 0,
+            min: 0,
+            max: 1,
+            isDiscrete: false
+        });
+        this.totalSize++;
+    }
+
+    printL() {
+        let ans = [];
+        let vec = this.toArray();
+        for (const chunk of this.chunks) {
+            let line = chunk.feature + ': ';
+            if (chunk.isDiscrete) {
+                line += `${chunk.val} (min ${chunk.min}, max ${chunk.max}) `;
+            }
+            for (let j = 0; j < chunk.max - chunk.min; j++) {
+                line += vec[chunk.offset + j] + ' ';
+            }
+            ans.push(line);
+        }
+        return ans;
     }
 }
 
@@ -206,11 +253,11 @@ class BasicMatrix {
     }
 
     toArray() {
-        return matrix;
+        return this.matrix;
     }
 
     get(i, j) {
-        return matrix[i][j];
+        return this.matrix[i][j];
     }
 
     applyVector(vector) {
@@ -394,7 +441,7 @@ class Softmax {
     }
 
     memoize(v) {
-        if (memo !== v) {
+        if (this.memo !== v) {
             this.memo = v;
             this.denom = 0;
             for (const x of v.toArray()) {
@@ -408,7 +455,7 @@ class Softmax {
         let arr = v.toArray();
         let ans = new Array(arr.length);
         for (let i = 0; i < arr.length; i++) {
-            ans[i] = Math.exp(arr[i]) / denom;
+            ans[i] = Math.exp(arr[i]) / this.denom;
         }
         return new BasicVector(ans);
     }
