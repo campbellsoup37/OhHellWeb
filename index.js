@@ -37,34 +37,38 @@ function removeUser(user) {
     user.confirmLogout();
 }
 
+function log(str) {
+    console.log(`${new Date().toLocaleString()}:\t${str}`)
+}
+
 io.on("connection", function (socket) {
-    console.log(`socket ${socket.id} connected at address ${socket.handshake.address}.`);
+    log(`socket ${socket.id} connected at address ${socket.handshake.address}.`);
 
     socket.on("login", function (data) {
         let user = new User(socket, data.id);
         addUser(user, true);
-        console.log(`user ${user.id} at socket ${socket.id}.`);
+        log(`user ${user.id} at socket ${socket.id}.`);
     });
     socket.on("logout", function () {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to logout, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to logout, but they are not in the user dict.`);
             return;
         }
 
-        console.log("logout", user.id);
+        log("logout", user.id);
         removeUser(user);
     });
     socket.on("disconnect", function () {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`socket ${socket.id} disconnected.`);
+            log(`socket ${socket.id} disconnected.`);
             return;
         }
 
-        console.log(`user ${user.id} disconnected.`);
+        log(`user ${user.id} disconnected.`);
 
         if (user.player) {
             user.game.disconnectPlayer(user, false);
@@ -76,7 +80,7 @@ io.on("connection", function (socket) {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            //console.log(`ERROR: socket ${socket.id} requested the game list, but they are not in the user dict.`);
+            //log(`ERROR: socket ${socket.id} requested the game list, but they are not in the user dict.`);
             return;
         }
 
@@ -87,7 +91,7 @@ io.on("connection", function (socket) {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to create a game, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to create a game, but they are not in the user dict.`);
             return;
         }
 
@@ -99,13 +103,13 @@ io.on("connection", function (socket) {
         gameDict[game.id] = game;
         user.advertise(game);
 
-        console.log(`new ${data.multiplayer ? 'multiplayer' : 'single player'} game: ${game.id}, hosted by ${user.id}.`);
+        log(`new ${data.multiplayer ? 'multiplayer' : 'single player'} game: ${game.id}, hosted by ${user.id}.`);
     });
     socket.on('joingame', id => {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to join game ${id}, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to join game ${id}, but they are not in the user dict.`);
             return;
         }
 
@@ -118,26 +122,26 @@ io.on("connection", function (socket) {
 
         game.joinPlayer(user);
 
-        console.log(`${user.id} joined game ${game.id}.`);
+        log(`${user.id} joined game ${game.id}.`);
     });
     socket.on('leavegame', () => {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to leave game, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to leave game, but they are not in the user dict.`);
             return;
         }
 
         let game = user.game;
 
         if (game === undefined) {
-            console.log(`ERROR: user ${user.id} tried to join game, but they are not in a game.`);
+            log(`ERROR: user ${user.id} tried to join game, but they are not in a game.`);
             return;
         }
 
         user.game.disconnectPlayer(user);
 
-        console.log(`${user.id} left game ${game.id}.`);
+        log(`${user.id} left game ${game.id}.`);
     });
 
     socket.on('autojoin', data => {
@@ -153,21 +157,21 @@ io.on("connection", function (socket) {
 
         game.joinPlayer(user);
 
-        console.log(`${user.id} joined game ${game.id}.`);
+        log(`${user.id} joined game ${game.id}.`);
     });
 
     socket.on('player', function (data) {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to update player, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to update player, but they are not in the user dict.`);
             return;
         }
 
         let game = user.game;
 
         if (!user.game) {
-            console.log(`ERROR: user ${user.id} tried to update player, but they are not in a game.`);
+            log(`ERROR: user ${user.id} tried to update player, but they are not in a game.`);
             return;
         }
 
@@ -177,14 +181,14 @@ io.on("connection", function (socket) {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to update options, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to update options, but they are not in the user dict.`);
             return;
         }
 
         let game = user.game;
 
         if (!user.game) {
-            console.log(`ERROR: user ${user.id} tried to update options, but they are not in a game.`);
+            log(`ERROR: user ${user.id} tried to update options, but they are not in a game.`);
             return;
         }
 
@@ -194,14 +198,14 @@ io.on("connection", function (socket) {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to start a game, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to start a game, but they are not in the user dict.`);
             return;
         }
 
         let game = user.game;
 
         if (!user.game) {
-            console.log(`ERROR: user ${user.id} tried to start a game, but they are not in a game.`);
+            log(`ERROR: user ${user.id} tried to start a game, but they are not in a game.`);
             return;
         }
 
@@ -211,14 +215,14 @@ io.on("connection", function (socket) {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to end a game, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to end a game, but they are not in the user dict.`);
             return;
         }
 
         let game = user.game;
 
         if (!user.game) {
-            console.log(`ERROR: user ${user.id} tried to end a game, but they are not in a game.`);
+            log(`ERROR: user ${user.id} tried to end a game, but they are not in a game.`);
             return;
         }
 
@@ -228,14 +232,14 @@ io.on("connection", function (socket) {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to bid, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to bid, but they are not in the user dict.`);
             return;
         }
 
         let game = user.game;
 
         if (!user.game) {
-            console.log(`ERROR: user ${user.id} tried to bid, but they are not in a game.`);
+            log(`ERROR: user ${user.id} tried to bid, but they are not in a game.`);
             return;
         }
 
@@ -246,14 +250,14 @@ io.on("connection", function (socket) {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to play, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to play, but they are not in the user dict.`);
             return;
         }
 
         let game = user.game;
 
         if (!user.game) {
-            console.log(`ERROR: user ${user.id} tried to play, but they are not in a game.`);
+            log(`ERROR: user ${user.id} tried to play, but they are not in a game.`);
             return;
         }
 
@@ -264,14 +268,14 @@ io.on("connection", function (socket) {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to pass, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to pass, but they are not in the user dict.`);
             return;
         }
 
         let game = user.game;
 
         if (!user.game) {
-            console.log(`ERROR: user ${user.id} tried to pass, but they are not in a game.`);
+            log(`ERROR: user ${user.id} tried to pass, but they are not in a game.`);
             return;
         }
 
@@ -282,14 +286,14 @@ io.on("connection", function (socket) {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to chat, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to chat, but they are not in the user dict.`);
             return;
         }
 
         let game = user.game;
 
         if (!user.game) {
-            console.log(`ERROR: user ${user.id} tried to chat, but they are not in a game.`);
+            log(`ERROR: user ${user.id} tried to chat, but they are not in a game.`);
             return;
         }
 
@@ -299,14 +303,14 @@ io.on("connection", function (socket) {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to replace with robot, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to replace with robot, but they are not in the user dict.`);
             return;
         }
 
         let game = user.game;
 
         if (!user.game) {
-            console.log(`ERROR: user ${user.id} tried to replace with robot, but they are not in a game.`);
+            log(`ERROR: user ${user.id} tried to replace with robot, but they are not in a game.`);
             return;
         }
 
@@ -316,14 +320,14 @@ io.on("connection", function (socket) {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to poke someone, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to poke someone, but they are not in the user dict.`);
             return;
         }
 
         let game = user.game;
 
         if (!user.game) {
-            console.log(`ERROR: user ${user.id} tried to poke someone, but they are not in a game.`);
+            log(`ERROR: user ${user.id} tried to poke someone, but they are not in a game.`);
             return;
         }
 
@@ -333,14 +337,14 @@ io.on("connection", function (socket) {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to claim, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to claim, but they are not in the user dict.`);
             return;
         }
 
         let game = user.game;
 
         if (!user.game) {
-            console.log(`ERROR: user ${user.id} tried to claim, but they are not in a game.`);
+            log(`ERROR: user ${user.id} tried to claim, but they are not in a game.`);
             return;
         }
 
@@ -350,14 +354,14 @@ io.on("connection", function (socket) {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to respond to a claim, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to respond to a claim, but they are not in the user dict.`);
             return;
         }
 
         let game = user.game;
 
         if (!user.game) {
-            console.log(`ERROR: user ${user.id} tried to respond to a claim, but they are not in a game.`);
+            log(`ERROR: user ${user.id} tried to respond to a claim, but they are not in a game.`);
             return;
         }
 
@@ -368,14 +372,14 @@ io.on("connection", function (socket) {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to reteam, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to reteam, but they are not in the user dict.`);
             return;
         }
 
         let game = user.game;
 
         if (!user.game) {
-            console.log(`ERROR: user ${user.id} tried to reteam, but they are not in a game.`);
+            log(`ERROR: user ${user.id} tried to reteam, but they are not in a game.`);
             return;
         }
 
@@ -385,14 +389,14 @@ io.on("connection", function (socket) {
         let user = userDict[socket.id];
 
         if (user === undefined) {
-            console.log(`ERROR: socket ${socket.id} tried to scramble teams, but they are not in the user dict.`);
+            log(`ERROR: socket ${socket.id} tried to scramble teams, but they are not in the user dict.`);
             return;
         }
 
         let game = user.game;
 
         if (!user.game) {
-            console.log(`ERROR: user ${user.id} tried to scramble teams, but they are not in a game.`);
+            log(`ERROR: user ${user.id} tried to scramble teams, but they are not in a game.`);
             return;
         }
 
@@ -525,7 +529,7 @@ class Game {
     dispose() {
         fs.unlink(this.jsonFilePath(), err => {
             if (err) {
-                console.log(`ERROR: unable to remove ${this.jsonFilePath()}.`);
+                log(`ERROR: unable to remove ${this.jsonFilePath()}.`);
             }
         });
         delete gameDict[this.id];
@@ -677,7 +681,7 @@ class Deck {
 
     deal(N, h, trump) {
         if (N * h + 1 > 52 * this.D) {
-            console.log('ERROR: tried to deal ' + h + ' cards to ' + N + ' players.');
+            log('ERROR: tried to deal ' + h + ' cards to ' + N + ' players.');
         }
 
         let out = [];
@@ -1740,7 +1744,7 @@ class Core {
 
     endGame(index) {
         if (index != this.game.host.index) {
-            console.log('ERROR: Player "' + this.players.get(index).id + '" tried to end the game, but they are not host.');
+            log('ERROR: Player "' + this.players.get(index).id + '" tried to end the game, but they are not host.');
             return;
         }
 
@@ -1902,7 +1906,7 @@ class Core {
     reteam(requester, index, number) {
         let requesterPlayer = this.players.players[requester];
         if (requester != index && !requesterPlayer.host) {
-            console.log('ERROR: Player "' + requesterPlayer.id + '" attempted to reteam someone else, but they are not host.');
+            log('ERROR: Player "' + requesterPlayer.id + '" attempted to reteam someone else, but they are not host.');
             return;
         }
 
@@ -1922,7 +1926,7 @@ class Core {
 
         let requesterPlayer = this.players.players[requester];
         if (!requesterPlayer.host) {
-            console.log('ERROR: Player "' + requesterPlayer.id + '" attempted to scramble teams, but they are not host.');
+            log('ERROR: Player "' + requesterPlayer.id + '" attempted to scramble teams, but they are not host.');
             return;
         }
 
@@ -2015,16 +2019,16 @@ class OhHellCore extends Core {
         let player = this.players.get(index);
 
         if (index != this.turn) {
-            console.log('ERROR: Player "' + player.id + '" attempted to bid out of turn.');
+            log('ERROR: Player "' + player.id + '" attempted to bid out of turn.');
             return;
         } else if (this.state != CoreState.BIDDING) {
-            console.log('ERROR: Player "' + player.id + '" attempted to bid, but the game is not in bidding state.');
+            log('ERROR: Player "' + player.id + '" attempted to bid, but the game is not in bidding state.');
             return;
         } else if (bid < 0 || bid > this.getHandSize()) {
-            console.log('ERROR: Player "' + player.id + '" attempted to bid ' + bid + ' with a hand size of ' + this.getHandSize() + '.');
+            log('ERROR: Player "' + player.id + '" attempted to bid ' + bid + ' with a hand size of ' + this.getHandSize() + '.');
             return;
         } else if (bid == this.whatCanINotBid(index)) {
-            console.log('ERROR: Player "' + player.id + '" attempted to bid what they cannot bid as dealer.');
+            log('ERROR: Player "' + player.id + '" attempted to bid what they cannot bid as dealer.');
             return;
         }
 
@@ -2046,16 +2050,16 @@ class OhHellCore extends Core {
         let player = this.players.get(index);
 
         if (index != this.turn) {
-            console.log('ERROR: Player "' + player.id + '" attempted to play out of turn.');
+            log('ERROR: Player "' + player.id + '" attempted to play out of turn.');
             return;
         } else if (this.state != CoreState.PLAYING) {
-            console.log('ERROR: Player "' + player.id + '" attempted to play, but the game is not in playing state.');
+            log('ERROR: Player "' + player.id + '" attempted to play, but the game is not in playing state.');
             return;
         } else if (!player.hand.some(c => c.matches(card))) {
-            console.log('ERROR: Player "' + player.id + '" attempted to play ' + card.toString() + ', but they do not have that card.');
+            log('ERROR: Player "' + player.id + '" attempted to play ' + card.toString() + ', but they do not have that card.');
             return;
         } else if (!this.whatCanIPlay(index).filter(c => c.matches(card)).length) {
-            console.log('ERROR: Player "' + player.id + '" attempted to play ' + card.toString() + ', failing to follow suit.');
+            log('ERROR: Player "' + player.id + '" attempted to play ' + card.toString() + ', failing to follow suit.');
             return;
         }
 
@@ -2249,7 +2253,7 @@ class OhHellCore extends Core {
             ans[trick.leader] = 0;
         }
 
-        //console.log(trick.order.map(e => [e.index, e.card.toString()]));
+        //log(trick.order.map(e => [e.index, e.card.toString()]));
 
         let handSet = new Set();
         if (index !== undefined) {
@@ -2516,13 +2520,13 @@ class OregonHeartsCore extends Core {
         let player = this.players.get(index);
 
         if (this.state != CoreState.PASSING) {
-            console.log('ERROR: Player "' + player.id + '" attempted to pass, but the game is not in passing state.');
+            log('ERROR: Player "' + player.id + '" attempted to pass, but the game is not in passing state.');
             return;
         } else if (cards.some(c1 => player.hand.filter(c2 => c2.matches(c1)).length == 0)) {
-            console.log('ERROR: Player "' + player.id + '" attempted to pass [' + cards + '], but they do not have all of those cards.');
+            log('ERROR: Player "' + player.id + '" attempted to pass [' + cards + '], but they do not have all of those cards.');
             return;
         } else if (cards.length != this.howManyToPass() && cards.length != 0) {
-            console.log('ERROR: Player "' + player.id + '" attempted to pass ' + this.howManyToPass() + ' cards.');
+            log('ERROR: Player "' + player.id + '" attempted to pass ' + this.howManyToPass() + ' cards.');
             return;
         }
 
@@ -2554,16 +2558,16 @@ class OregonHeartsCore extends Core {
         let player = this.players.get(index);
 
         if (index != this.turn) {
-            console.log('ERROR: Player "' + player.id + '" attempted to play out of turn.');
+            log('ERROR: Player "' + player.id + '" attempted to play out of turn.');
             return;
         } else if (this.state != CoreState.PLAYING) {
-            console.log('ERROR: Player "' + player.id + '" attempted to play, but the game is not in playing state.');
+            log('ERROR: Player "' + player.id + '" attempted to play, but the game is not in playing state.');
             return;
         } else if (!player.hand.some(c => c.matches(card))) {
-            console.log('ERROR: Player "' + player.id + '" attempted to play ' + card.toString() + ', but they do not have that card.');
+            log('ERROR: Player "' + player.id + '" attempted to play ' + card.toString() + ', but they do not have that card.');
             return;
         } else if (!this.whatCanIPlay(index).filter(c => c.matches(card)).length) {
-            console.log('ERROR: Player "' + player.id + '" attempted to play ' + card.toString() + ', which is illegal.');
+            log('ERROR: Player "' + player.id + '" attempted to play ' + card.toString() + ', which is illegal.');
             return;
         }
 
