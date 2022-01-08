@@ -8,7 +8,7 @@ var ml = require('./ml');
 
 // App setup
 var app = express();
-var port = 6066;
+var port = 80;
 var server = app.listen(port, function () {
     console.log("listening to requests on port " + port);
 });
@@ -1900,7 +1900,7 @@ class Core {
     acceptClaim() {
         this.claims.push(this.claimer);
         this.claimer = undefined;
-        this.doNextRound();
+        this.finishRound();
     }
 
     reteam(requester, index, number) {

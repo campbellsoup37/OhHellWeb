@@ -1101,11 +1101,12 @@ function buildModules(mode, params) {
     switch (mode) {
         case 'Oh Hell':
             if (params.T != 0) {
-                try {
-                    return buildModulesOITeam(params.N, params.D, params.T);
-                } catch (e) {
-                    console.log(`Failed to load OIT for params={N: ${params.N}, D: ${params.D}, T: ${params.T}}. Falling back to OI.`);
-                }
+                return buildModulesOITeam(params.N, params.D, params.T);
+                // try {
+                //     return buildModulesOITeam(params.N, params.D, params.T);
+                // } catch (e) {
+                //     console.log(`Failed to load OIT for params={N: ${params.N}, D: ${params.D}, T: ${params.T}}. Falling back to OI.`);
+                // }
             }
 
             return buildModulesOI(params.N, params.D);

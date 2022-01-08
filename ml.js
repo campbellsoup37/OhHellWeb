@@ -507,7 +507,7 @@ class NNModel {
 
         let data = fs.readFileSync(path, 'utf8');
 
-        let mats = data.split('\n\n').filter(code => code.length > 0);
+        let mats = data.replace(/\r/g, '').split('\n\n').filter(code => code.length > 0);
         for (let i = 0; i < mats.length; i += 2) {
             let w = new BasicMatrix().fromString(mats[i]);
             let b = new BasicVector().fromString(mats[i + 1]);

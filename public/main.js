@@ -3388,12 +3388,15 @@ function animateTrickTake(index) {
 function showResultMessage() {
     let te = new TimerEntry(messageTime);
     te.onFirstAction = function () {
-        let pronoun = 'You';
+        let pronoun = options.teams ? 'Your team' : 'You';
 
-        if (myPlayer.getBid() == myPlayer.getTaken()) {
+        let bid = options.teams ? teams[myPlayer.team].members.reduce((b, p) => b + p.bid, 0) : myPlayer.getBid();
+        let taken = options.teams ? teams[myPlayer.team].members.reduce((t, p) => t + p.taken, 0) : myPlayer.getTaken();
+
+        if (bid == taken) {
             message = pronoun + ' made it!';
         } else {
-            message = pronoun + ' went down by ' + Math.abs(myPlayer.getBid() - myPlayer.getTaken()) + '.';
+            message = pronoun + ' went down by ' + Math.abs(bid - taken) + '.';
         }
     };
     te.onLastAction = function () {
@@ -3983,7 +3986,11 @@ window.addEventListener('wheel', function (e) {
 });
 
 function execute() {
-    baseUrl = 'http://73.238.135.14:6066';
+    let rawUrl = window.location.href
+    if (rawUrl.includes('http://')) {
+        rawUrl = rawUrl.split('http://')[1];
+    }
+    baseUrl = `http://${rawUrl.split('/')[0]}`;
     socket = io.connect(baseUrl);
 
     frame = document.getElementById("canvas");
