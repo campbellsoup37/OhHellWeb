@@ -13,7 +13,7 @@ var loadingCanvas, stateCanvas, mainMenuCanvas, modeSelectCanvas, canvas;
 var stateDivs;
 var mpButton;
 var lmUsername, lmConnect;
-var igName, igChangeName, igKibitzer, igRobots, igDoubleDeck, igTeams, igStart, igBack;
+var igName, igChangeName, igKibitzer, igRobots, igDoubleDeck, igTeams, igOregon, igStart, igBack;
 var igLeftDiv, igRightDiv, igScoreSheetContainer, igRightSpacerDiv;
 var igHotdogContainer;
 
@@ -25,6 +25,7 @@ var games;
 var players, myPlayer;
 var teams;
 var options;
+var preferences;
 var mode;
 var multiplayer;
 var rounds, roundNumber;
@@ -34,7 +35,8 @@ var canPlay;
 var cardJustPlayed;
 var takenTimer, trickTaken;
 var message;
-var showMessageButtons;
+var showMessageButtons, decision;
+var showSpreadsheet, spreadsheetRow;
 var preselected;
 var showOneCard;
 var robotDelay;
@@ -127,19 +129,21 @@ function drawText(ctx, text, x, y, posx, posy, fnt, style, maxWidth) {
     ctx.fillText(text, x, y + 1, maxWidth);
 }
 
-function drawBox(ctx, x, y, width, height, roundness, thickBorderColor, noBorder) {
-	ctx.beginPath();
-	ctx.moveTo(x + roundness, y);
-	ctx.lineTo(x + width - roundness, y);
-	ctx.quadraticCurveTo(x + width, y, x + width, y + roundness);
-	ctx.lineTo(x + width, y + height - roundness);
-	ctx.quadraticCurveTo(x + width, y + height, x + width - roundness, y + height);
-	ctx.lineTo(x + roundness, y + height);
-	ctx.quadraticCurveTo(x, y + height, x, y + height - roundness);
-	ctx.lineTo(x, y + roundness);
-	ctx.quadraticCurveTo(x, y, x + roundness, y);
-	ctx.closePath();
-	ctx.fill();
+function drawBox(ctx, x, y, width, height, roundness, thickBorderColor, noBorder, noFill) {
+	if (!noFill) {
+        ctx.beginPath();
+    	ctx.moveTo(x + roundness, y);
+    	ctx.lineTo(x + width - roundness, y);
+    	ctx.quadraticCurveTo(x + width, y, x + width, y + roundness);
+    	ctx.lineTo(x + width, y + height - roundness);
+    	ctx.quadraticCurveTo(x + width, y + height, x + width - roundness, y + height);
+    	ctx.lineTo(x + roundness, y + height);
+    	ctx.quadraticCurveTo(x, y + height, x, y + height - roundness);
+    	ctx.lineTo(x, y + roundness);
+    	ctx.quadraticCurveTo(x, y, x + roundness, y);
+    	ctx.closePath();
+    	ctx.fill();
+    }
 
 	if (!noBorder) {
         color = ctx.strokeStyle;
@@ -213,7 +217,9 @@ function drawCard(ctx, card, x, y, scale, small, dark, maxY, thickBorderColor) {
         drawBox(ctx, x0, y0, cw1 * scale, diff, 15, undefined, true);
     }
 
-    // TODO border color
+    if (thickBorderColor !== undefined) {
+        drawBox(ctx, x0, y0, cw1 * scale, ch1 * scale, 7, thickBorderColor, false, true);
+    }
 }
 
 function drawLine(ctx, x1, y1, x2, y2) {
@@ -907,7 +913,7 @@ class ScoreSheet extends WrappedDOMElement {
             let info = '';
             if (mode == 'Oh Hell') {
                 info = round.handSize;
-            } else if (mode == 'Oregon Hearts') {
+            } else if (mode == 'Hearts') {
                 if (round.pass == 0) {
                     info = 'K';
                 } else if (round.pass > 0) {
@@ -967,6 +973,15 @@ class ScoreSheet extends WrappedDOMElement {
                     for (const p of members) {
                         if (j < p.bids.length) {
                             ctx.fillStyle = 'rgba(200, 200, 200, 0.7)';
+
+                            // if (p.takens === undefined || p.takens.length < p.bid.length) {
+                            //     ctx.fillStyle = 'rgba(200, 200, 200, 0.7)';
+                            // } else if (p.takens[j] == p.bids[j]) {
+                            //     ctx.fillStyle = 'rgb(255, 175, 175)';
+                            // } else {
+                            //     ctx.fillStyle = 'rgb(125, 255, 125)';
+                            // }
+
                             drawOval(ctx,
                                 currentX + 1 + fullWid - chipSpacing * k - chipStart,
                                 this.scoreVSpacing * (j + 0.5) - b / 2,
@@ -1018,7 +1033,7 @@ class ScoreSheet extends WrappedDOMElement {
         }
 
         if (this.sortBy == 1) {
-            let sign = mode == 'Oregon Hearts' ? -1 : 1;
+            let sign = mode == 'Hearts' ? -1 : 1;
             if (this.options.teams) {
                 this.teams.sort((t1, t2) => sign * Math.sign(t2.members[0].score - t1.members[0].score));
             } else {
@@ -2233,7 +2248,7 @@ class MainMenuCanvas extends OhcCanvas {
                             case 'Oh Hell':
                                 modeColor = 'green';
                                 break;
-                            case 'Oregon Hearts':
+                            case 'Hearts':
                                 modeColor = 'rgb(255, 100, 100)';
                                 break;
                         }
@@ -2465,6 +2480,8 @@ class InGameCanvas extends OhcCanvas {
             height() {return 24;}
             container() {return document.getElementById('inGameDiv');}
 
+            isShown() {return mode == 'Oh Hell';}
+
             paint() {
                 super.paint();
                 if (!gameState || gameState == GameState.PREGAME || gameState == GameState.POSTGAME || roundNumber >= rounds.length) {
@@ -2518,6 +2535,8 @@ class InGameCanvas extends OhcCanvas {
             width() {return thisCanvas.scoreSheet.width();}
             height() {return 24;}
             container() {return document.getElementById('inGameDiv');}
+
+            isShown() {return options.teams;}
 
             paint() {
                 super.paint();
@@ -2593,31 +2612,110 @@ class InGameCanvas extends OhcCanvas {
                 && thisCanvas.cardInteractables[0].hidden()
                 && gameState == GameState.BIDDING;
 
-        let acceptButton = document.createElement('button');
-        acceptButton.classList.add(
+        let showSpreadsheetButton = document.createElement('button');
+        showSpreadsheetButton.innerHTML = 'Show spreadsheet';
+        showSpreadsheetButton.classList.add(
             'bg-white', 'rounded-lg', 'border', 'border-black', 'w-5', 'h-5',
             'font-bold', 'text-sm', 'select-none', 'hover:bg-gray-300'
         );
-        this.messageAccept = new WrappedDOMElement(acceptButton);
-        this.messageAccept.x = () => (cachedWidth - scoreWidth) / 2 - 100;
-        this.messageAccept.y = () => cachedHeight / 2 + 50;
-        this.messageAccept.width = () => 80;
-        this.messageAccept.height = () => 30;
-        this.messageAccept.container = () => document.getElementById('inGameDiv');
-        this.messageAccept.isShown = () => showMessageButtons;
+        showSpreadsheetButton.addEventListener('click', () => showSpreadsheet = !showSpreadsheet);
+        this.showSpreadsheet = new WrappedDOMElement(showSpreadsheetButton);
+        this.showSpreadsheet.x = () => (cachedWidth - scoreWidth) / 2 - 300;
+        this.showSpreadsheet.y = () => cachedHeight - (this.showSpreadsheet.height() + 10);
+        this.showSpreadsheet.width = () => 150;
+        this.showSpreadsheet.height = () => 32;
+        this.showSpreadsheet.container = () => document.getElementById('inGameDiv');
+        this.showSpreadsheet.isShown = () =>
+                (gameState == GameState.BIDDING || gameState == GameState.PLAYING)
+                && rounds[roundNumber] !== undefined
+                && rounds[roundNumber].handSize == 1;
 
-        let declineButton = document.createElement('button');
-        declineButton.classList.add(
-            'bg-white', 'rounded-lg', 'border', 'border-black', 'w-5', 'h-5',
-            'font-bold', 'text-sm', 'select-none', 'hover:bg-gray-300'
-        );
-        this.messageDecline = new WrappedDOMElement(declineButton);
-        this.messageDecline.x = () => (cachedWidth - scoreWidth) / 2 + 20;
-        this.messageDecline.y = () => cachedHeight / 2 + 50;
-        this.messageDecline.width = () => 80;
-        this.messageDecline.height = () => 30;
-        this.messageDecline.container = () => document.getElementById('inGameDiv');
-        this.messageDecline.isShown = () => showMessageButtons;
+        class Spreadsheet extends PanelInteractable {
+            constructor() {
+                super(
+                    document.getElementById('igSpreadsheetContainer'),
+                    document.getElementById('igSpreadsheetCanvas'),
+                    false
+                );
+
+                this.margin = 4;
+                this.rowHeight = 15;
+            }
+
+            x() {return (cachedWidth - scoreWidth) / 2 - 200;}
+            y() {return cachedHeight / 2 - this.height() / 2;}
+            width() {return 400;}
+            height() {return 2 * this.margin + this.rowHeight * (1 + players.length);}
+            container() {return document.getElementById('inGameDiv');}
+
+            isShown() {
+                return showSpreadsheet
+                    && (gameState == GameState.BIDDING || gameState == GameState.PLAYING)
+                    && rounds[roundNumber] !== undefined
+                    && rounds[roundNumber].handSize == 1;
+            }
+
+            paint() {
+                super.paint();
+                if (!this.isShown()) {
+                    return;
+                }
+
+                this.clear();
+                this.fillContainer();
+
+                drawLine(this.ctx, this.width() * 1 / 3, this.margin, this.width() * 1 / 3, this.height() - this.margin);
+                drawLine(this.ctx, this.width() * 2 / 3, this.margin, this.width() * 2 / 3, this.height() - this.margin);
+                drawText(this.ctx, 'player', this.width() * 1 / 6, this.rowHeight / 2, 1, 1, fontSmall, 'black');
+                drawText(this.ctx, 'cutoff card', this.width() * 1 / 2, this.rowHeight / 2, 1, 1, fontSmall, 'black');
+                drawText(this.ctx, 'bid', this.width() * 5 / 6, this.rowHeight / 2, 1, 1, fontSmall, 'black');
+                drawLine(this.ctx, this.margin, this.rowHeight, this.width() - this.margin, this.rowHeight);
+
+                let unbidFound = false;
+                for (let j = 0; j < players.length; j++) {
+                    let i = (rounds[roundNumber].dealer + 1 + j) % players.length;
+
+                    drawText(this.ctx, players[i].name, this.width() * 1 / 6, this.rowHeight * (2 * j + 3) / 2, 1, 1, fontSmall, 'black');
+                    let cutoff = !unbidFound || players[i].bidded ? (spreadsheetRow ? spreadsheetRow[j] : 'todo') : '';
+                    drawText(this.ctx, cutoff, this.width() * 1 / 2, this.rowHeight * (2 * j + 3) / 2, 1, 1, fontSmall, 'black');
+                    let bid = players[i].bidded ? players[i].bid : '';
+                    drawText(this.ctx, bid, this.width() * 5 / 6, this.rowHeight * (2 * j + 3) / 2, 1, 1, fontSmall, 'black');
+
+                    if (!players[i].bidded) {
+                        unbidFound = true;
+                    }
+                }
+            }
+        }
+        this.spreadsheet = new Spreadsheet();
+
+        // let acceptButton = document.createElement('button');
+        // acceptButton.classList.add(
+        //     'bg-white', 'rounded-lg', 'border', 'border-black', 'w-5', 'h-5',
+        //     'font-bold', 'text-sm', 'select-none', 'hover:bg-gray-300'
+        // );
+        // this.messageAccept = new WrappedDOMElement(acceptButton);
+        // this.messageAccept.x = () => (cachedWidth - scoreWidth) / 2 - 100;
+        // this.messageAccept.y = () => cachedHeight / 2 + 50;
+        // this.messageAccept.width = () => 80;
+        // this.messageAccept.height = () => 30;
+        // this.messageAccept.container = () => document.getElementById('inGameDiv');
+        // this.messageAccept.isShown = () => showMessageButtons;
+        //
+        // let declineButton = document.createElement('button');
+        // declineButton.classList.add(
+        //     'bg-white', 'rounded-lg', 'border', 'border-black', 'w-5', 'h-5',
+        //     'font-bold', 'text-sm', 'select-none', 'hover:bg-gray-300'
+        // );
+        // this.messageDecline = new WrappedDOMElement(declineButton);
+        // this.messageDecline.x = () => (cachedWidth - scoreWidth) / 2 + 20;
+        // this.messageDecline.y = () => cachedHeight / 2 + 50;
+        // this.messageDecline.width = () => 80;
+        // this.messageDecline.height = () => 30;
+        // this.messageDecline.container = () => document.getElementById('inGameDiv');
+        // this.messageDecline.isShown = () => showMessageButtons;
+
+        this.decisionButtons = [];
 
         let leaveB = document.createElement('button');
         leaveB.innerHTML = 'Leave table';
@@ -2699,10 +2797,12 @@ class InGameCanvas extends OhcCanvas {
         );
         this.chatArea = new WrappedDOMElement(chatA);
         this.chatArea.x = () => cachedWidth - this.chatArea.width() - 10;
-        this.chatArea.y = () => Math.max(
-            cachedHeight - this.chatField.height() - 15 - maxChatHeight,
-            (options.teams ? this.teamInfo.y() + this.teamInfo.height() : this.hotdog.y() + this.hotdog.height()) + 10
-        );
+        this.chatArea.y = () => {
+            let minY = cachedHeight - this.chatField.height() - 15 - maxChatHeight;
+            let divAbove = (options.teams ? this.teamInfo.y() + this.teamInfo.height() : this.hotdog.y() + this.hotdog.height()) + 10;
+            let maxNamePlate = gameState == GameState.PREGAME ? Math.max(...this.namePlates.map(np => np.player.pov() ? 0 : np.y() + np.height() + 10)) : 0;
+            return Math.max(minY, divAbove, maxNamePlate);
+        }
         this.chatArea.width = () => {
             if (gameState == GameState.PREGAME) {
                 return 430;
@@ -2734,8 +2834,10 @@ class InGameCanvas extends OhcCanvas {
 
         this.miscInteractables = [
             this.showCard,
-            this.messageAccept,
-            this.messageDecline,
+            this.showSpreadsheet,
+            this.spreadsheet,
+            // this.messageAccept,
+            // this.messageDecline,
             this.leaveButton,
             this.endButton,
             this.claimButton,
@@ -2752,7 +2854,7 @@ class InGameCanvas extends OhcCanvas {
         );
         passB.addEventListener('click', () => makePass(pass.list));
         this.passButton = new WrappedDOMElement(passB);
-        this.passButton.x = () => (cachedWidth - scoreWidth) / 2 - 100;
+        this.passButton.x = () => (cachedWidth - scoreWidth) / 2 - (options.oregon ? 100 : 45);
         this.passButton.y = () => cachedHeight - 310;
         this.passButton.width = () => 90;
         this.passButton.height = () => 30;
@@ -2774,7 +2876,8 @@ class InGameCanvas extends OhcCanvas {
         this.abstainButton.width = () => 90;
         this.abstainButton.height = () => 30;
         this.abstainButton.container = () => document.getElementById('inGameDiv');
-        this.abstainButton.isShown = () => gameState == GameState.PASSING && !myPlayer.passed && !myPlayer.isKibitzer();
+        this.abstainButton.isShown = () => gameState == GameState.PASSING && !myPlayer.passed && !myPlayer.isKibitzer() && options.oregon;
+        this.abstainButton.isEnabled = () => options.oregon;
         this.abstainButton.click = () => {}; // so cards don't deselect
 
         this.postGamePage = new PostGamePage();
@@ -2793,6 +2896,7 @@ class InGameCanvas extends OhcCanvas {
             this.cardInteractables,
             this.namePlates,
             [this.lastTrick],
+            this.decisionButtons,
             this.miscInteractables,
             this.robotButtons,
             [this.postGamePage]
@@ -2984,7 +3088,7 @@ class InGameCanvas extends OhcCanvas {
                 let x = player.getTrickTimer() * endX + (1 - player.getTrickTimer()) * startX;
                 let y = player.getTrickTimer() * endY + (1 - player.getTrickTimer()) * startY;
                 if (player.getTrickTimer() > 0) {
-                    drawCard(ctx, player.getTrick(), x, y, 1, true, false, -1, undefined);
+                    drawCard(ctx, player.getTrick(), x, y, 1, true, false, -1, options.teams && preferences.teamColorTrick ? colors[player.team] : undefined);
                 }
             }
         }
@@ -3047,6 +3151,10 @@ class InGameCanvas extends OhcCanvas {
     }
 
     paintFrameRate() {
+        if (!preferences.showFps) {
+            return;
+        }
+
         if (this.frameTimes === undefined) {
             this.frameTimes = [];
             this.framePointer = 0;
@@ -3195,6 +3303,52 @@ class InGameCanvas extends OhcCanvas {
         this.bidButtons.length = 0;
     }
 
+    setDecision(data) {
+        this.decisionButtons.length = 0;
+
+        let sep = 20;
+        let widths = [];
+        let x = sep;
+        for (const text of data.choices) {
+            let w = 30 + getStringDimensions(text, fontBold)[0];
+            widths.push(w);
+            x -= w + sep;
+        }
+        x /= 2;
+
+        for (let i = 0; i < data.choices.length; i++) {
+            let button = document.createElement('button');
+            button.innerHTML = data.choices[i];
+            button.classList.add(
+                'bg-white', 'rounded-lg', 'border', 'border-black', 'w-5', 'h-5',
+                'font-bold', 'text-sm', 'select-none', 'hover:bg-gray-300'
+            );
+            let icopy = i;
+            button.addEventListener('click', () => {
+                makeDecision(icopy);
+            });
+
+            let wrappedButton = new WrappedDOMElement(button);
+            let xcopy = x;
+            wrappedButton.x = () => (cachedWidth - scoreWidth) / 2 + xcopy;
+            wrappedButton.y = () => cachedHeight / 2 + 50;
+            wrappedButton.width = () => widths[i];
+            wrappedButton.height = () => 30;
+            wrappedButton.container = () => document.getElementById('inGameDiv');
+            wrappedButton.isShown = () => decision !== undefined;
+            this.decisionButtons.push(wrappedButton);
+            x += widths[i] + sep;
+        }
+
+        this.handleDecisionCases(data);
+    }
+
+    handleDecisionCases(data) {
+        if (data.name == 'claim') {
+            players[data.data.index].setHand(data.data.hand.map(c => new Card(c.num, c.suit)));
+        }
+    }
+
     loadPostGame(data) {
         data.trumps = data.trumps.map(c => new Card(c.num, c.suit));
         for (const player of data.players) {
@@ -3225,7 +3379,7 @@ function canPlayThis(card) {
     /*if (turn == leader) {
         return true;
     } else {
-        let followIndex = mode == 'Oregon Hearts' ? (myPlayer.index + players.length - 1) % players.length : leader;
+        let followIndex = mode == 'Hearts' ? (myPlayer.index + players.length - 1) % players.length : leader;
         let led = players[followIndex].getTrick().suit;
         return card.suit == led || myPlayer.getHand().filter(c => c.suit == led).length == 0;
     }*/
@@ -3385,6 +3539,17 @@ function animateTrickTake(index) {
     canvas.pushTimerEntry(animateTe);
 }
 
+function showMessage(text) {
+    let te = new TimerEntry(messageTime);
+    te.onFirstAction = function () {
+        message = text;
+    };
+    te.onLastAction = function () {
+        message = '';
+    }
+    canvas.pushTimerEntry(te);
+}
+
 function showResultMessage() {
     let te = new TimerEntry(messageTime);
     te.onFirstAction = function () {
@@ -3535,13 +3700,15 @@ class Options {
         this.robots = 0;
         this.D = 1;
         this.teams = false;
+        this.oregon = false;
     }
 
     toDict() {
         return {
             robots: this.robots,
             D: this.D,
-            teams: this.teams
+            teams: this.teams,
+            oregon: this.oregon
         };
     }
 
@@ -3549,6 +3716,14 @@ class Options {
         this.robots = options.robots;
         this.D = options.D;
         this.teams = options.teams;
+        this.oregon = options.oregon;
+    }
+}
+
+class Preferences {
+    constructor() {
+        this.showFps = false;
+        this.teamColorTrick = true;
     }
 }
 
@@ -3840,12 +4015,14 @@ function updatePlayersOnCanvas() {
         igRobots.disabled = true;
         igDoubleDeck.disabled = true;
         igTeams.disabled = true;
+        igOregon.disabled = true;
         disableButton(igStart);
         disableButton(document.getElementById('igRandomizeTeams'));
     } else {
         igRobots.disabled = false;
         igDoubleDeck.disabled = false;
         igTeams.disabled = false;
+        igOregon.disabled = false;
         enableButton(igStart);
         enableButton(document.getElementById('igRandomizeTeams'));
     }
@@ -3862,8 +4039,9 @@ function setPlayerPositions() {
         cut1++;
     }
 
+    let myIndex = Math.min(myPlayer.getIndex(), N - 1);
     for (const player of players) {
-        let index = (player.getIndex() - myPlayer.getIndex() + N - 1) % N;
+        let index = (player.getIndex() - myIndex + N - 1) % N;
         if (index < cut1) {
             player.getX = function () {return 10;};
             player.getY = function () {return cachedHeight * (cut1 - index) / (cut1 + 1);};
@@ -3872,6 +4050,7 @@ function setPlayerPositions() {
             player.getTakenY = function () {return player.getY() + 50;};
             player.getPassX = () => player.getX() + 250;
             player.getPassY = () => player.getY();
+            player.pov = () => false;
         } else if (index < cut2) {
             player.getX = function () {return (cachedWidth - scoreWidth) * (index - cut1 + 1) / (cut2 - cut1 + 1);};
             player.getY = function () {return 85;};
@@ -3880,6 +4059,7 @@ function setPlayerPositions() {
             player.getTakenY = function () {return player.getY() - 35;};
             player.getPassX = () => player.getX();
             player.getPassY = () => player.getY() + 100;
+            player.pov = () => false;
         } else if (index < N - 1) {
             player.getX = function () {return cachedWidth - scoreWidth - 10;};
             player.getY = function () {return cachedHeight * (index - cut2 + 1) / (N - 1 - cut2 + 1);};
@@ -3888,14 +4068,25 @@ function setPlayerPositions() {
             player.getTakenY = function () {return player.getY() + 50;};
             player.getPassX = () => player.getX() - 250;
             player.getPassY = () => player.getY();
+            player.pov = () => false;
         } else {
             player.getX = function () {return (cachedWidth - scoreWidth) / 2;};
             player.getY = function () {return cachedHeight - 20;};
             player.getJust = function () {return 1;};
-            player.getTakenX = function () {return player.getX() + 260;};
+            player.getTakenX = function () {
+                if (rounds[roundNumber] === undefined) {
+                    return 0;
+                } else {
+                    return player.getX() + Math.max(
+                        260,
+                        (rounds[roundNumber].handSize - 1) * cardSeparation / 2 + cardWidth / 2 + 20
+                    );
+                }
+            };
             player.getTakenY = function () {return player.getY() - 50;};
             player.getPassX = () => player.getX();
             player.getPassY = () => player.getY() - 300;
+            player.pov = () => true;
         }
     }
 }
@@ -4023,6 +4214,9 @@ function execute() {
 
     //setCookie('username', 'soup' + Math.random().toFixed(3), 1);
     username = getCookie('username');
+    if (username === undefined) {
+        username = '';
+    }
 
     setSocketCallbacks();
     loadVars();
@@ -4066,8 +4260,8 @@ function addEventListeners() {
     document.getElementById("msOhHell").addEventListener('click', () => {
         createGame('Oh Hell');
     });
-    document.getElementById("msOregonHearts").addEventListener('click', () => {
-        createGame('Oregon Hearts');
+    document.getElementById("msHearts").addEventListener('click', () => {
+        createGame('Hearts');
     });
     document.getElementById("msBack").addEventListener('click', () => {
         changeState(ClientState.MAIN_MENU);
@@ -4112,6 +4306,12 @@ function addEventListeners() {
         sendOptionsUpdate();
     });
 
+    igOregon = document.getElementById("igOregon");
+    igOregon.addEventListener('change', () => {
+        options.oregon = igOregon.checked;
+        sendOptionsUpdate();
+    });
+
     igStart = document.getElementById("igStart");
     igStart.addEventListener('click', () => {startGame();});
 
@@ -4142,11 +4342,24 @@ function loadVars() {
         teams.push(new ClientTeam(i));
     }
     options = new Options();
+
+    preferences = new Preferences();
+    let showFps = getCookie('showFps');
+    if (showFps !== undefined) {
+        preferences.showFps = getCookie('showFps') == 'true';
+    }
+    let teamColorTrick = getCookie('teamColorTrick');
+    if (teamColorTrick !== undefined) {
+        preferences.teamColorTrick = getCookie('teamColorTrick') == 'true';
+    }
+
     rounds = [];
     takenTimer = 1;
     trickTaken = false;
     message = '';
-    showMessageButtons = false;
+    // showMessageButtons = false;
+    decision = undefined;
+    showSpreadsheet = false;
     preselected = [];
     showOneCard = false;
 
@@ -4167,7 +4380,7 @@ function loadVars() {
     scoreMargin = 10;
 
     scoreWidth = 450;
-    minChatHeight = 70;
+    minChatHeight = 200;
     maxChatHeight = 200;
 
     font = "13px Arial";
@@ -4204,7 +4417,7 @@ function getCookie(cname) {
             return c.substring(name.length, c.length);
         }
     }
-    return "";
+    return undefined;
 }
 
 function setCookie(cname, cvalue, exdays) {
@@ -4263,6 +4476,18 @@ function changeGameState(newState) {
         igRobots.value = options.robots;
         igDoubleDeck.checked = options.D == 2;
         igTeams.checked = options.teams;
+        igOregon.checked = options.oregon;
+
+        if (mode == 'Oh Hell') {
+            document.getElementById("doubleDeckOptionsRow").style.display = 'table-row';
+            document.getElementById("teamsOptionsRow").style.display = 'table-row';
+            document.getElementById("oregonOptionsRow").style.display = 'none';
+        }
+        if (mode == 'Hearts') {
+            document.getElementById("doubleDeckOptionsRow").style.display = 'none';
+            document.getElementById("teamsOptionsRow").style.display = 'none';
+            document.getElementById("oregonOptionsRow").style.display = 'table-row';
+        }
 
         scoreWidth = 0;
 		break;
@@ -4371,6 +4596,7 @@ function setSocketCallbacks() {
             igRobots.value = options.robots;
             igDoubleDeck.checked = options.D == 2;
             igTeams.checked = options.teams;
+            igOregon.checked = options.oregon;
             document.getElementById('teamsDiv').style.display = options.teams ? 'inline' : 'none';
         });
     });
@@ -4446,6 +4672,7 @@ function setSocketCallbacks() {
             igRobots.value = data.options.robots;
             igDoubleDeck.checked = data.options.D == 2;
             igTeams.checked = data.options.teams;
+            igOregon.checked = data.options.oregon;
 
             rounds.length = 0;
             rounds = rounds.concat(data.rounds);
@@ -4501,6 +4728,15 @@ function setSocketCallbacks() {
             if (!myPlayer.isKibitzer()) {
                 canvas.makeHandInteractables();
             }
+
+            let myDecision = data.players.decision[myPlayer.index];
+            if (myDecision) {
+                pushBasicTimer(function () {
+                    decision = myDecision;
+                    message = decision.prompt;
+                    canvas.setDecision(decision);
+                });
+            }
         });
     });
     socket.on('deal', function (data) {
@@ -4555,6 +4791,10 @@ function setSocketCallbacks() {
         pushBasicTimer(function () {
             changeGameState(GameState.BIDDING);
             turn = data.turn;
+
+            if (data.ss) {
+                spreadsheetRow = data.ss;
+            }
 
             if (turn == myPlayer.getIndex() && !myPlayer.isKibitzer()) {
                 canvas.makeBidInteractables();
@@ -4663,30 +4903,6 @@ function setSocketCallbacks() {
         canvas.chat(data);
     });
     socket.on('poke', () => pokeSound.play());
-    socket.on('claim', data => {
-        pushBasicTimer(function () {
-            if (data.index != myPlayer.getIndex()) {
-                message = players[data.index].getName() + ' claims the rest of the tricks';
-                players[data.index].setHand(data.hand.map(c => new Card(c.num, c.suit)));
-
-                canvas.messageAccept.element.innerHTML = 'Accept';
-                canvas.messageAccept.element.addEventListener('click', () => {
-                    respondToClaim(true);
-                    message = '';
-                    showMessageButtons = false;
-                });
-
-                canvas.messageDecline.element.innerHTML = 'Decline';
-                canvas.messageDecline.element.addEventListener('click', () => {
-                    respondToClaim(false);
-                    message = '';
-                    showMessageButtons = false;
-                });
-
-                showMessageButtons = true;
-            }
-        });
-    });
     socket.on('claimresult', data => {
         showClaimMessage(data);
     });
@@ -4698,6 +4914,22 @@ function setSocketCallbacks() {
             }
         });
     });
+    socket.on('decision', function (data) {
+        pushBasicTimer(function () {
+            message = data.prompt;
+            decision = data;
+            canvas.setDecision(data);
+        });
+    });
+    socket.on('removedecision', function (data) {
+        pushBasicTimer(function () {
+            message = '';
+            decision = undefined;
+        });
+    });
+    socket.on('message', data => {
+        showMessage(data);
+    });
 }
 
 // Out
@@ -4707,7 +4939,7 @@ function connect(uname) {
     }
 
     username = uname;
-    setCookie('username', uname, 30);
+    setCookie('username', uname, 365);
     socket.emit('login', {id: uname});
 }
 function logout() {
@@ -4795,6 +5027,9 @@ function makeClaim() {
 function respondToClaim(accept) {
     socket.emit('claimresponse', accept);
 }
+function makeDecision(index) {
+    socket.emit('decision', {name: decision.name, choice: index});
+}
 
 function reteam(index, team) {
     socket.emit('reteam', {index: index, team: team});
@@ -4805,11 +5040,11 @@ function scrambleTeams() {
 
 // debug
 function debugExecute() {
-    /*animationTime = 1;
-    bidStayTime = 0;
-    trickStayTime = 0;
-    messageTime = 0;
-    robotDelay = 0;*/
+    // animationTime = 1;
+    // bidStayTime = 0;
+    // trickStayTime = 0;
+    // messageTime = 0;
+    // robotDelay = 0;
 }
 
 function debugConnected() {

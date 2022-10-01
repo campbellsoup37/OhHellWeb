@@ -149,6 +149,15 @@ class StrategyModuleDumb {
 
         return canPlay[Math.floor(Math.random() * canPlay.length)];
     }
+
+    makeDecision(data) {
+        let choice = {
+            name: data.name,
+            choice: Math.floor(Math.random() * data.choices.length)
+        }
+
+        return choice;
+    }
 }
 
 // oi --------------------------------------------------------------------------
@@ -214,6 +223,17 @@ class StrategyModuleOI {
 
         //let canPlay = this.core.whatCanIPlay(this.player.index);
         //return canPlay[Math.floor(Math.random() * canPlay.length)];
+    }
+
+    makeDecision(data) {
+        if (data.name == 'claim') {
+            let accept = this.core.hasColdClaim(data.data.index);
+
+            return {
+                name: 'claim',
+                choice: accept ? 0 : 1
+            }
+        }
     }
 
     getMakingProbs() {
@@ -532,6 +552,17 @@ class StrategyModuleOITeam {
         log(`}`, this.logDepth);
 
         return myPlay;
+    }
+
+    makeDecision(data) {
+        if (data.name == 'claim') {
+            let accept = this.core.hasColdClaim(data.data.index);
+
+            return {
+                name: 'claim',
+                choice: accept ? 0 : 1
+            }
+        }
     }
 
     getMakingProbs() {
@@ -1110,7 +1141,7 @@ function buildModules(mode, params) {
             }
 
             return buildModulesOI(params.N, params.D);
-        case 'Oregon Hearts':
+        case 'Hearts':
             return new Array(params.N).fill(0).map(x => new StrategyModuleDumb());
     }
 }

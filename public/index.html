@@ -49,7 +49,7 @@
         <div class="fixed inset-0 flex items-center justify-center" style="display:none;" id="modeSelectDiv">
             <div class="bg-white bg-opacity-50 w-42 h-auto p-3 space-y-3 rounded-2xl border-black border">
                 <button class="bg-green-300 rounded-lg border border-black w-full h-10 font-bold text-md select-none hover:bg-green-500" id="msOhHell">Oh Hell</button>
-                <button class="bg-red-300 rounded-lg border border-black w-full h-10 font-bold text-md select-none hover:bg-red-500" id="msOregonHearts">Oregon Hearts</button>
+                <button class="bg-red-300 rounded-lg border border-black w-full h-10 font-bold text-md select-none hover:bg-red-500" id="msHearts">Hearts</button>
                 <button class="bg-white rounded-lg border border-black w-full h-10 font-bold text-md select-none hover:bg-gray-300" id="msBack">Back</button>
             </div>
         </div>
@@ -73,13 +73,19 @@
                         <p class="font-bold w-1/2 h-8 text-right" style="display:table-cell;">Robots:</p>
                         <input type="number" min="0" max="10" value="0" class="bg-white rounded-3xl border border-black w-14 h-6 p-2" style="display:table-cell;" id="igRobots"></input>
                     </div>
-                    <div class="w-full" style="display:table-row;">
+
+                    <div class="w-full" style="display:none;" id="doubleDeckOptionsRow">
                         <p class="font-bold w-1/2 h-8 text-right" style="display:table-cell;">Double deck:</p>
                         <input type="checkbox" class="bg-white rounded-3xl border border-black w-5 h-5" style="display:table-cell;" id="igDoubleDeck"></input>
                     </div>
-                    <div class="w-full" style="display:table-row;">
+                    <div class="w-full" style="display:none;" id="teamsOptionsRow">
                         <p class="font-bold w-1/2 h-8 text-right" style="display:table-cell;">Teams:</p>
                         <input type="checkbox" class="bg-white rounded-3xl border border-black w-5 h-5" style="display:table-cell;" id="igTeams"></input>
+                    </div>
+
+                    <div class="w-full" style="display:none;" id="oregonOptionsRow">
+                        <p class="font-bold w-1/2 h-8 text-right" style="display:table-cell;">Oregon:</p>
+                        <input type="checkbox" class="bg-white rounded-3xl border border-black w-5 h-5" style="display:table-cell;" id="igOregon"></input>
                     </div>
                 </div>
                 <div class="w-full mt-12" style="display:table;">
@@ -116,6 +122,9 @@
             </div>
             <div class="p-0 bg-white rounded-lg border-black border" id="igTeamInfoContainer">
                 <canvas class="p-0 bg-transparent" id="igTeamInfoCanvas"></canvas>
+            </div>
+            <div class="p-0 bg-white rounded-lg border-black border" id="igSpreadsheetContainer">
+                <canvas class="p-0 bg-transparent" id="igSpreadsheetCanvas"></canvas>
             </div>
         </div>
 

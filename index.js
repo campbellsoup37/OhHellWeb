@@ -8,7 +8,7 @@ var ml = require('./ml');
 
 // App setup
 var app = express();
-var port = 80;
+var port = 6066;
 var server = app.listen(port, function () {
     console.log("listening to requests on port " + port);
 });
@@ -367,6 +367,24 @@ io.on("connection", function (socket) {
 
         game.core.respondToClaim(user.player.index, accept);
     });
+    socket.on('decision', function (data) {
+        let user = userDict[socket.id];
+
+        if (user === undefined) {
+            log(`ERROR: socket ${socket.id} tried to respond to a decision, but they are not in the user dict.`);
+            return;
+        }
+
+        let game = user.game;
+
+        if (!user.game) {
+            log(`ERROR: user ${user.id} tried to respond to a decision, but they are not in a game.`);
+            return;
+        }
+
+        game.core.makeDecision(user.player.index, data);
+        user.player.readiedDecision = undefined;
+    });
 
     socket.on('reteam', function (data) {
         let user = userDict[socket.id];
@@ -465,8 +483,8 @@ class Game {
             case 'Oh Hell':
                 this.core = new OhHellCore(this.players, this);
                 break;
-            case 'Oregon Hearts':
-                this.core = new OregonHeartsCore(this.players, this);
+            case 'Hearts':
+                this.core = new HeartsCore(this.players, this);
                 break;
         }
     }
@@ -680,7 +698,12 @@ class Deck {
     }
 
     deal(N, h, trump) {
-        if (N * h + 1 > 52 * this.D) {
+        let totalDealt = N * h;
+        if (trump) {
+            totalDealt++;
+        }
+
+        if (totalDealt > 52 * this.D) {
             log('ERROR: tried to deal ' + h + ' cards to ' + N + ' players.');
         }
 
@@ -811,14 +834,17 @@ class Player {
         this.hands.push(hand.map(c => c));
     }
 
-    addBid(bid) {
+    addBid(bid, offset) {
         this.bid = bid;
         this.bidded = true;
         this.bids.push(bid);
 
         let qs = this.bidQs[this.bidQs.length - 1];
         let aiBid = this.aiBids[this.aiBids.length - 1];
-        this.hypoPointsLost.push(ai.pointsMean(qs, aiBid) - ai.pointsMean(qs, this.bid));
+        if (!offset) {
+            offset = 0;
+        }
+        this.hypoPointsLost.push(ai.pointsMean(qs, aiBid + offset) - ai.pointsMean(qs, this.bid + offset));
     }
 
     addPlay(card) {
@@ -902,6 +928,19 @@ class Player {
         this.passReady(cards);
     }
 
+    startDecision(data) {
+        if (!this.kibitzer) {
+            this.decision = data;
+            this.decisionAsync(data);
+            this.commandDecision(data);
+        }
+    }
+
+    async decisionAsync(data) {
+        let choice = await this.strategyModule.makeDecision(data);
+        this.decisionReady(choice);
+    }
+
     addQs(qs) {
         this.bidQs.push(qs);
     }
@@ -938,6 +977,9 @@ class Player {
     playReady(card) {}
     commandPass(data) {}
     passReady(cards) {}
+    commandDecision(data) {}
+    decisionReady(card) {}
+    removeDecision() {}
     commandDeal(data) {}
     updateHands(data) {}
     commandPassReport(data) {}
@@ -962,6 +1004,7 @@ class PlayersList {
         return {
             info: this.players.map(p => p.toDict()),
             hands: this.players.map(p => p.hand.map(c => (index == -1 || p.index == index ? c : new Card()).toDict())),
+            decision: this.players.map(p => p.index == index ? p.decision : undefined),
             bids: this.players.map(p => p.bids),
             takens: this.players.map(p => p.takens),
             scores: this.players.map(p => p.scores)
@@ -1224,10 +1267,10 @@ class PlayersList {
     communicateTurn(state, turn, data) {
         if (state == CoreState.BIDDING) {
             for (const player of this.players) {
-                player.startBid({turn: turn});
+                player.startBid({turn: turn, ss: data.ss});
             }
             for (const player of this.kibitzers) {
-                player.startBid({turn: turn});
+                player.startBid({turn: turn, ss: data.ss});
             }
         } else if (state == CoreState.PLAYING) {
             for (const player of this.players) {
@@ -1256,8 +1299,8 @@ class PlayersList {
         return ans;
     }
 
-    bidReport(index, bid) {
-        this.players[index].addBid(bid);
+    bidReport(index, bid, offset) {
+        this.players[index].addBid(bid, offset);
         this.emitAll('bidreport', {index: index, bid: bid, human: this.players[index].human});
     }
 
@@ -1316,7 +1359,7 @@ class PlayersList {
 
             player.mistakes.push(player.roundMistakes);
 
-            if (this.game.mode == 'Oregon Hearts') { //TODO
+            if (this.game.mode == 'Hearts') { //TODO
                 continue;
             }
 
@@ -1392,33 +1435,49 @@ class PlayersList {
     }
 
     announceClaim(index) {
-        this.emitAll('claim', {index: index, hand: this.players[index].hand.map(c => c.toDict())});
+        for (const player of this.players) {
+            if (player.index == index) {
+                continue;
+            }
+
+            player.startDecision({
+                name: 'claim',
+                prompt: `${this.players[index].name} claims the rest of the tricks.`,
+                choices: ['Accept', 'Reject'],
+                data: {
+                    index: index,
+                    hand: this.players[index].hand.map(c => c.toDict())
+                }
+            });
+        }
     }
 
     respondToClaim(index, accept) {
         if (!accept) {
             this.emitAll('claimresult', {accepted: false, claimer: this.core.claimer});
             this.core.claimer = undefined;
-        } else {
-            this.players[index].acceptedClaim = true;
-            if (this.players.filter(p => p.human && !p.replacedByRobot && !p.acceptedClaim).length == 0) {
-                let winner = this.players[this.core.claimer];
-                let remaining = winner.hand.length;
-                if (!winner.trick.isEmpty()) {
-                    remaining++;
-                }
 
-                winner.taken += remaining;
-
-                this.emitAll('claimresult', {accepted: true, claimer: this.core.claimer, remaining: remaining});
-                this.core.acceptClaim();
-            } else {
-                return;
+            for (const player of this.players) {
+                player.acceptedClaim = false;
+                player.removeDecision();
             }
+
+            return;
         }
 
-        for (const player of this.players) {
-            player.acceptedClaim = false;
+        this.players[index].acceptedClaim = true;
+        this.players[index].removeDecision();
+        if (this.players.filter(p => p.human && !p.replacedByRobot && !p.acceptedClaim).length == 0) {
+            let winner = this.players[this.core.claimer];
+            let remaining = winner.hand.length;
+            if (!winner.trick.isEmpty()) {
+                remaining++;
+            }
+
+            winner.taken += remaining;
+
+            this.emitAll('claimresult', {accepted: true, claimer: this.core.claimer, remaining: remaining});
+            this.core.acceptClaim();
         }
     }
 
@@ -1552,6 +1611,10 @@ class HumanPlayer extends Player {
         this.user.socket.emit('pass', data);
     }
 
+    commandDecision(data) {
+        this.user.socket.emit('decision', data);
+    }
+
     commandPassReport(data) {
         let copy = data.cards.map(c => data.index == this.index || this.kibitzer ? c : new Card());
         this.user.socket.emit('passreport', {index: data.index, cards: copy});
@@ -1576,6 +1639,12 @@ class HumanPlayer extends Player {
         } else if (this.readiedPlay !== undefined) {
             this.core.incomingPlay(this.index, this.readiedPlay);
             this.readiedPlay = undefined;
+        } else if (this.readiedPass !== undefined) {
+            this.core.incomingPass(this.index, this.readiedPass);
+            this.readiedPass = undefined;
+        } else if (this.readiedDecision !== undefined) {
+            this.core.makeDecision(this.index, this.readiedDecision);
+            this.readiedDecision = undefined;
         }
     }
 
@@ -1606,8 +1675,22 @@ class HumanPlayer extends Player {
         }
     }
 
+    decisionReady(choice) {
+        if (this.replacedByRobot) {
+            this.core.makeDecision(this.index, choice);
+            this.readiedDecision = undefined;
+        } else {
+            this.readiedDecision = choice;
+        }
+    }
+
     poke() {
         this.user.socket.emit('poke');
+    }
+
+    removeDecision() {
+        this.decision = undefined;
+        this.user.socket.emit('removedecision');
     }
 }
 
@@ -1631,6 +1714,14 @@ class AiPlayer extends Player {
 
     passReady(cards) {
         this.core.incomingPass(this.index, cards);
+    }
+
+    decisionReady(choice) {
+        this.core.makeDecision(this.index, choice);
+    }
+
+    removeDecision() {
+        this.decision = undefined;
     }
 }
 
@@ -1879,29 +1970,20 @@ class Core {
         this.claimer = index;
         this.players.announceClaim(index);
 
-        if (this.players.players.filter(p => !p.human || p.replacedByRobot).length) {
-            if (!this.hasColdClaim(index)) {
-                this.respondToClaim(-1, false);
-                return;
-            }
-        }
-
-        this.respondToClaim(index, true); // claimer auto-accepts
-    }
-
-    respondToClaim(index, accept) {
-        if (this.claimer === undefined) {
-            return;
-        }
-
-        this.players.respondToClaim(index, accept);
+        this.makeDecision(index, {name: 'claim', choice: 0}); // claimer auto-accepts
     }
 
     acceptClaim() {
         this.claims.push(this.claimer);
         this.claimer = undefined;
+        this.claimAccepted();
+    }
+
+    claimAccepted() {
         this.finishRound();
     }
+
+    makeDecision(index, data) {}
 
     reteam(requester, index, number) {
         let requesterPlayer = this.players.players[requester];
@@ -1974,6 +2056,16 @@ class OhHellCore extends Core {
     }
 
     transitionFromStart() {
+        try {
+            let T = this.options.teams ? this.players.teams.filter(t => t.members.length > 0).length : 0;
+            let path = `./models/N${this.players.size()}/D${this.options.D}/T${T}/ss.txt`;
+            if (fs.existsSync(path)) {
+                this.spreadsheet = fs.readFileSync(path, 'utf8');
+                this.spreadsheet = this.spreadsheet.split('\r\n').map(row => row.split(','));
+            }
+        } catch(err) {
+            this.spreadsheet = undefined;
+        }
         this.deal();
     }
 
@@ -1995,8 +2087,8 @@ class OhHellCore extends Core {
     buildRounds() {
         this.rounds = [];
 
-        //this.rounds.push({dealer: 0, handSize: 1, isOver: false});
-        //this.rounds.push({dealer: 0, handSize: 1, isOver: false});
+        // this.rounds.push({dealer: 0, handSize: 1, isOver: false});
+        // this.rounds.push({dealer: 0, handSize: 1, isOver: false});
 
         let maxH = Math.min(10, Math.floor(51 * this.options.D / this.players.size()));
         for (let i = maxH; i >= 2; i--) {
@@ -2012,7 +2104,7 @@ class OhHellCore extends Core {
 
     transitionFromDeal() {
         this.state = CoreState.BIDDING;
-        this.players.communicateTurn(this.state, this.turn);
+        this.players.communicateTurn(this.state, this.turn, {ss: this.spreadsheet ? this.spreadsheet[0] : undefined});
     }
 
     incomingBid(index, bid) {
@@ -2032,11 +2124,22 @@ class OhHellCore extends Core {
             return;
         }
 
-        this.players.bidReport(index, bid);
+        let offset = 0;
+        if (this.options.teams) {
+            offset = this.players.teams[player.team].bid();
+        }
+
+        this.players.bidReport(index, bid, offset);
 
         this.turn = this.players.nextUnkicked(this.turn);
 
-        let data = {canPlay: undefined};
+        let bidI = 0;
+        for (let i = 0; i < this.players.size() && this.rounds[this.roundNumber].handSize == 1; i++) {
+            let j = (this.rounds[this.roundNumber].dealer + 1 + i) % this.players.size();
+            bidI += (this.players.get(j).bid << i);
+        }
+
+        let data = {canPlay: undefined, ss: this.spreadsheet && this.rounds[this.roundNumber].handSize == 1 ? this.spreadsheet[bidI] : undefined};
         if (this.players.allHaveBid()) {
             this.state = CoreState.PLAYING;
             this.trickOrder = new TrickOrder(this.trump.suit);
@@ -2141,6 +2244,16 @@ class OhHellCore extends Core {
             }
         }
         return true;
+    }
+
+    makeDecision(index, data) {
+        if (data.name == 'claim') {
+            if (this.claimer === undefined) {
+                return;
+            }
+
+            this.players.respondToClaim(index, data.choice == 0);
+        }
     }
 
     score(player) {
@@ -2441,8 +2554,8 @@ class SeenCollection {
     }
 }
 
-// Oregon Hearts
-class OregonHeartsCore extends Core {
+// Hearts
+class HeartsCore extends Core {
     constructor(players, game) {
         super(players, game);
     }
@@ -2457,18 +2570,23 @@ class OregonHeartsCore extends Core {
         switch (this.players.size()) {
             case 3:
                 cardsToRemove = [new Card(2, 0)];
+                this.totalPoints = 26;
                 break;
             case 5:
                 cardsToRemove = [new Card(2, 0), new Card(2, 1)];
+                this.totalPoints = 26;
                 break;
             case 6:
                 cardsToRemove = [new Card(2, 0), new Card(2, 1), new Card(2, 2), new Card(2, 3)];
+                this.totalPoints = 25;
                 break;
             case 7:
                 cardsToRemove = [new Card(2, 0), new Card(2, 1), new Card(2, 2)];
+                this.totalPoints = 26;
                 break;
             case 8:
                 cardsToRemove = [new Card(2, 0), new Card(2, 1), new Card(2, 2), new Card(2, 3)];
+                this.totalPoints = 25;
                 break;
         }
         this.deck.initialize = function () {
@@ -2509,7 +2627,7 @@ class OregonHeartsCore extends Core {
 
     transitionFromDeal() {
         if (this.rounds[this.roundNumber].pass == 0) {
-            this.transitionToPlay()
+            this.transitionToPlay();
         } else {
             this.state = CoreState.PASSING;
             this.players.communicateTurn(this.state, this.turn);
@@ -2551,6 +2669,8 @@ class OregonHeartsCore extends Core {
 
         this.firstTrick = true;
         this.heartsBroken = false;
+        this.precalculatedPoints = undefined;
+        this.shooter = -2; // -2 nobody has taking points, -1 points are split, otherwise index of shooter
         this.players.communicateTurn(this.state, this.turn, {canPlay: this.whatCanIPlay(this.turn)});
     }
 
@@ -2588,6 +2708,18 @@ class OregonHeartsCore extends Core {
             this.winners[this.winners.length - 1].push(this.turn);
             this.leaders[this.leaders.length - 1].push(this.leader);
             this.leader = this.turn;
+            let hasPoints = false;
+            for (const player of this.players.players) {
+                let playerCard = player.trick;
+                if (playerCard.suit == 3 || (playerCard.suit == 2 && playerCard.num == 12)) {
+                    if (this.shooter == -2) {
+                        this.shooter = this.turn;
+                    } else if (this.shooter != this.turn) {
+                        this.shooter = -1;
+                    }
+                    break;
+                }
+            }
             this.players.trickWinner(this.turn);
             this.trickOrder = new TrickOrder(-1);
             this.playNumber++;
@@ -2597,14 +2729,69 @@ class OregonHeartsCore extends Core {
                 this.players.communicateTurn(this.state, this.turn, {canPlay: this.whatCanIPlay(this.turn)});
             } else {
                 this.claims.push(-1);
-                this.finishRound();
+                this.checkIfSomeoneShot();
             }
         }
     }
 
+    claimAccepted() {
+        this.checkIfSomeoneShot();
+    }
+
+    checkIfSomeoneShot() {
+        if (this.shooter < 0) {
+            this.finishRound();
+        } else {
+            let choices = [`Go down ${this.totalPoints}`, `Everyone else go up ${this.totalPoints}`];
+            if (this.players.players[this.shooter].score + this.totalPoints == 100) {
+                choices.push(`Go up ${this.totalPoints}`);
+            }
+
+            this.players.players[this.shooter].startDecision({
+                name: 'shoot',
+                prompt: 'You shot! Choose an option.',
+                choices: choices
+            });
+        }
+    }
+
+    makeDecision(index, data) {
+        if (data.name == 'shoot') {
+            if (index != this.shooter) {
+                return;
+            }
+
+            this.players.players[this.shooter].removeDecision();
+
+            this.precalculatedPoints = [];
+            for (let i = 0; i < this.players.size(); i++) {
+                if (data.choice == 0) {
+                    if (i == this.shooter) {
+                        this.precalculatedPoints.push(-this.totalPoints);
+                    } else {
+                        this.precalculatedPoints.push(0);
+                    }
+                } else if (data.choice == 1) {
+                    if (i == this.shooter) {
+                        this.precalculatedPoints.push(0);
+                    } else {
+                        this.precalculatedPoints.push(this.totalPoints);
+                    }
+                } else if (data.choice == 2) {
+                    if (i == this.shooter) {
+                        this.precalculatedPoints.push(this.totalPoints);
+                    } else {
+                        this.precalculatedPoints.push(0);
+                    }
+                }
+            }
+            this.finishRound();
+        }
+    }
+
     getWinner() {
-        let prev = (this.leader + this.players.size() - 1) % this.players.size();
-        let suit = this.players.players[prev].trick.suit;
+        let ref = this.options.oregon ? (this.leader + this.players.size() - 1) % this.players.size() : this.leader;
+        let suit = this.players.players[ref].trick.suit;
         let winner = -1;
         let max = 0;
         for (const player of this.players.players) {
@@ -2617,6 +2804,11 @@ class OregonHeartsCore extends Core {
     }
 
     score(player) {
+        if (this.precalculatedPoints !== undefined) {
+            // This will be reached if someone shoots.
+            return this.precalculatedPoints[player.index];
+        }
+
         let hearts = 0;
         let queen = false;
         for (const card of player.cardsTaken) {
@@ -2627,11 +2819,11 @@ class OregonHeartsCore extends Core {
             }
         }
 
-        let points = hearts == 0 && !queen ? 10 : hearts + (queen ? 13 : 0);
+        let points = hearts == 0 && !queen && this.options.oregon ? 10 : hearts + (queen ? 13 : 0);
 
         if (player.score + points == 100) {
             points = -player.score;
-        } // TODO shooting?
+        }
 
         return points;
     }
@@ -2666,8 +2858,8 @@ class OregonHeartsCore extends Core {
             }
         }
 
-        let prev = (index + this.players.size() - 1) % this.players.size();
-        let follow = index == this.leader ? -1 : this.players.players[prev].trick.suit;
+        let ref = this.options.oregon ? (index + this.players.size() - 1) % this.players.size() : this.leader;
+        let follow = index == this.leader ? -1 : this.players.players[ref].trick.suit;
         if (follow == -1) { // leading
 
             // check if hearts broken
@@ -2708,13 +2900,15 @@ class Options {
         this.robots = 0;
         this.D = 1;
         this.teams = false;
+        this.oregon = false;
     }
 
     toDict() {
         return {
             robots: this.robots,
             D: this.D,
-            teams: this.teams
+            teams: this.teams,
+            oregon: this.oregon
         };
     }
 
@@ -2722,5 +2916,6 @@ class Options {
         this.robots = parseInt(options.robots);
         this.D = options.D;
         this.teams = options.teams;
+        this.oregon = options.oregon;
     }
 }
