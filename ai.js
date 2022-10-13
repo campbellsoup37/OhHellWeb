@@ -226,6 +226,12 @@ class StrategyModuleOI {
     }
 
     makeDecision(data) {
+        if (data.name == 'bid') {
+            return {bid: this.makeBid()}
+        }
+        if (data.name == 'play') {
+            return {play: this.makePlay()}
+        }
         if (data.name == 'claim') {
             let accept = this.core.hasColdClaim(data.data.index);
 

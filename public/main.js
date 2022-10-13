@@ -20,9 +20,15 @@ var igHotdogContainer;
 var username;
 var autojoinId;
 
-// variables
+// shared with server
+var game
+var gameCache
+var myPlayer
+var updateCallbacks
+
+// client only
 var games;
-var players, myPlayer;
+var players;
 var teams;
 var options;
 var preferences;
@@ -72,6 +78,15 @@ var pokeSound;
  */
 var font, fontBold, fontSmall, fontLarge, fontTitle;
 var colors;
+
+// card utils
+function emptyCard() {
+    return {num: 0, suit: 0, visibleTo: -1}
+}
+
+function isEmpty(card) {
+    return card.num == 0
+}
 
 // this function is very expensive -- memo as often as possible
 function getStringDimensions(text, fnt) {
@@ -183,7 +198,7 @@ function drawOval(ctx, x, y, width, height, fill) {
 }
 
 function drawCard(ctx, card, x, y, scale, small, dark, maxY, thickBorderColor) {
-    let cardNumber = card.isEmpty() ? 52 : (card.num - 1) % 13 + 13 * rowCodeInv[card.suit];
+    let cardNumber = isEmpty(card) ? 52 : (card.num - 1) % 13 + 13 * rowCodeInv[card.suit];
     let col = cardNumber % 9;
     let row = (cardNumber - col) / 9;
 
@@ -297,6 +312,12 @@ class CanvasInteractable {
         }
 
     	return this.interactableMoused;
+    }
+
+    dispose() {
+        for (const inter of this.interactables) {
+            inter.dispose()
+        }
     }
 }
 
@@ -554,35 +575,126 @@ class TextField extends CanvasInteractable {
 /*
  * PlayerNamePlate
  */
-class PlayerNamePlate extends CanvasInteractable {
-    constructor(player) {
-        super();
-        this.player = player;
-        this.pokeable = false;
+class PlayerSeat extends CanvasInteractable {
+    constructor(index) {
+        super()
+        this.index = index
+
+        this.bidTimer = 0
+        this.trickTimer = 0
+        this.trickRad = -1
+
+        // position functions -- do the casework outside of the functions themselves
+        this.setPosition()
+
+        // replace by robot button
+        let button = document.createElement('button');
+        button.innerHTML = 'Robot';
+        button.classList.add(
+            'bg-white', 'rounded-lg', 'border', 'border-black', 'w-5', 'h-5',
+            'font-bold', 'text-sm', 'select-none', 'hover:bg-gray-300'
+        );
+        button.addEventListener('click', () => replaceWithRobot(index));
+
+        let inter = new WrappedDOMElement(button);
+        inter.x = () => player.getX() + maxWid * (1 - player.getJust()) / 2 - 30;
+        inter.y = () => player.getY() - 55;
+        inter.width = () => 60;
+        inter.height = () => 30;
+        inter.isShown = () => this.player().disconnected && myPlayer.host && !this.player().replacedByRobot;
+        inter.container = () => document.getElementById('inGameDiv')
+
+        this.interactables.push(inter);
+    }
+
+    player() {
+        return game.players[this.index]
+    }
+
+    setPosition() {
+        let N = game.players.length;
+        let cut1 = Math.floor((N - 1) / 3);
+        let cut2 = 2 * cut1;
+        if ((N - 1) % 3 != 0) {
+            cut2++;
+        }
+        if ((N - 1) % 3 == 2) {
+            cut1++;
+        }
+
+        let myIndex = Math.min(myPlayer.index, N - 1);
+        let index = (this.index - myIndex + N - 1) % N
+
+        if (index < cut1) {
+            this.getX = function () {return 10;};
+            this.getY = function () {return cachedHeight * (cut1 - index) / (cut1 + 1);};
+            this.getJust = function () {return 0;};
+            this.getTakenX = function () {return this.getX() + 20;};
+            this.getTakenY = function () {return this.getY() + 50;};
+            this.getPassX = () => player.getX() + 250;
+            this.getPassY = () => player.getY();
+            this.pov = () => false;
+        } else if (index < cut2) {
+            this.getX = function () {return (cachedWidth - scoreWidth) * (index - cut1 + 1) / (cut2 - cut1 + 1);};
+            this.getY = function () {return 85;};
+            this.getJust = function () {return 1;};
+            this.getTakenX = function () {return this.getX() + 110;};
+            this.getTakenY = function () {return this.getY() - 35;};
+            this.getPassX = () => this.getX();
+            this.getPassY = () => this.getY() + 100;
+            this.pov = () => false;
+        } else if (index < N - 1) {
+            this.getX = function () {return cachedWidth - scoreWidth - 10;};
+            this.getY = function () {return cachedHeight * (index - cut2 + 1) / (N - 1 - cut2 + 1);};
+            this.getJust = function () {return 2;};
+            this.getTakenX = function () {return this.getX() - 90;};
+            this.getTakenY = function () {return this.getY() + 50;};
+            this.getPassX = () => this.getX() - 250;
+            this.getPassY = () => this.getY();
+            this.pov = () => false;
+        } else {
+            this.getX = function () {return (cachedWidth - scoreWidth) / 2;};
+            this.getY = function () {return cachedHeight - 20;};
+            this.getJust = function () {return 1;};
+            this.getTakenX = function () {
+                if (game.rounds[game.roundNumber] === undefined) {
+                    return 0;
+                } else {
+                    return this.getX() + Math.max(
+                        260,
+                        (game.rounds[game.roundNumber].handSize - 1) * cardSeparation / 2 + cardWidth / 2 + 20
+                    );
+                }
+            };
+            this.getTakenY = function () {return this.getY() - 50;};
+            this.getPassX = () => this.getX();
+            this.getPassY = () => this.getY() - 300;
+            this.pov = () => true;
+        }
     }
 
     x() {
-        return (this.player.getX() - this.player.getJust() * this.width() / 2);
+        return (this.getX() - this.getJust() * this.width() / 2)
     }
 
     y() {
-        return this.player.getY() - 10;
+        return this.getY() - 10
     }
 
     width() {
-        return maxWid;
+        return maxWid
     }
 
     height() {
-        return 20;
+        return 20
     }
 
     paint() {
-        if (gameState == GameState.POSTGAME) {
+        if (game.state == 'POSTGAME' || !this.player()) {
             return;
         }
 
-        let preOrPost = gameState == GameState.PREGAME || gameState == GameState.POSTGAME;
+        let preOrPost = game.state == 'PREGAME' || game.state == 'POSTGAME';
 
         // glow
         if (this.player.pokeTime != 0 && new Date().getTime() >= this.player.pokeTime && !preOrPost) {
@@ -596,22 +708,22 @@ class PlayerNamePlate extends CanvasInteractable {
         }
 
         // plate
-        if (preOrPost && this.player.isHost() || !preOrPost && turn == this.player.getIndex() || gameState == GameState.PASSING && !this.player.passed) {
+        if (preOrPost && this.player().host || !preOrPost && game.turn == this.index || game.state == 'PASSING' && !this.player().passed) {
             ctx.fillStyle = "yellow";
-        } else if (!this.player.human) {
+        } else if (!this.player().human) {
             ctx.fillStyle = 'rgb(210, 255, 255)';
         } else {
             ctx.fillStyle = "white";
         }
-        drawBox(ctx, this.x(), this.y(), this.width(), this.height(), 12, options.teams ? colors[this.player.team] : undefined);
+        drawBox(ctx, this.x(), this.y(), this.width(), this.height(), 12, game.options.teams ? colors[this.player().team] : undefined);
 
         // name
         drawText(ctx,
-            this.player.getName(),
+            this.player().name,
             this.x() + this.width() / 2,
             this.y() + this.height() / 2,
             1, 1, font,
-            this.player.isDisconnected() ? 'red' : 'black',
+            this.player().disconnected ? 'red' : 'black',
             this.width() - 40
         );
 
@@ -620,25 +732,25 @@ class PlayerNamePlate extends CanvasInteractable {
         }
 
         // bid chip
-        if (this.player.hasBid()) {
-            let iRelToMe = this.player.getIndex() - myPlayer.getIndex();
-            let startX = (cachedWidth - scoreWidth) / 2 - 100 * Math.sin(2 * Math.PI * iRelToMe / players.length);
-            let startY = cachedHeight / 2 - 50 + 100 * Math.cos(2 * Math.PI * iRelToMe / players.length);
+        if (this.player().bidded) {
+            let iRelToMe = this.index - myPlayer.index;
+            let startX = (cachedWidth - scoreWidth) / 2 - 100 * Math.sin(2 * Math.PI * iRelToMe / game.players.length);
+            let startY = cachedHeight / 2 - 50 + 100 * Math.cos(2 * Math.PI * iRelToMe / game.players.length);
             let endX = this.x() + 10;
             let endY = this.y() + this.height() / 2;
-            let bidX = startX * (1 - this.player.getBidTimer()) + endX * this.player.getBidTimer();
-            let bidY = startY * (1 - this.player.getBidTimer()) + endY * this.player.getBidTimer();
-            let radius = 50 * (1 - this.player.getBidTimer()) + 16 * this.player.getBidTimer();
+            let bidX = startX * (1 - this.bidTimer) + endX * this.bidTimer;
+            let bidY = startY * (1 - this.bidTimer) + endY * this.bidTimer;
+            let radius = 50 * (1 - this.bidTimer) + 16 * this.bidTimer;
 
-            let h = this.player.hand.length + (this.player.trick.isEmpty() ? 0 : 1);
-            let want = this.player.bid - this.player.taken;
+            let h = this.player().hand.length + (isEmpty(this.player().trick) ? 0 : 1);
+            let want = this.player().bid - this.player().taken;
             if (options.teams) {
-                let team = teams[this.player.team];
+                let team = teams[this.player().team];
                 want = team.bid() - team.taken();
             }
-            if (this.player.getBidTimer() < 1) {
+            if (this.bidTimer < 1) {
                 ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-            } else if (gameState == GameState.BIDDING || want > 0 && want <= h) {
+            } else if (game.state == 'BIDDING' || want > 0 && want <= h) {
                 ctx.fillStyle = 'rgba(175, 175, 175, 0.7)';
             } else if (want == 0) {
                 ctx.fillStyle = 'rgb(125, 255, 125)';
@@ -646,28 +758,32 @@ class PlayerNamePlate extends CanvasInteractable {
                 ctx.fillStyle = 'rgb(255, 175, 175)';
             }
             drawOval(ctx, bidX - radius / 2, bidY - radius / 2, radius, radius);
-            if (this.player.getBidTimer() == 0) {
-                ctx.strokeStyle = options.teams ? colors[this.player.team] : 'black';
+            if (this.bidTimer == 0) {
+                ctx.strokeStyle = options.teams ? colors[this.player().team] : 'black';
                 ctx.lineWidth = options.teams ? 2 : 1;
                 drawOval(ctx, bidX - radius / 2, bidY - radius / 2, radius, radius, false);
                 ctx.lineWidth = 1;
-                drawText(ctx, this.player.getBid(), bidX, bidY + 1, 1, 1, fontLarge, 'black');
+                drawText(ctx, this.player().bid, bidX, bidY + 1, 1, 1, fontLarge, 'black');
             } else {
-                drawText(ctx, this.player.getBid(), bidX, bidY, 1, 1, font, 'black');
+                drawText(ctx, this.player().bid, bidX, bidY, 1, 1, font, 'black');
             }
         }
 
         // dealer chip
-        if (dealer == this.player.getIndex()) {
+        if (game.dealer == this.index) {
             ctx.fillStyle = 'cyan';
             drawOval(ctx, this.x() + this.width() - 19, this.y() + this.height() / 2 - 8, 16, 16);
             drawText(ctx, 'D', this.x() + this.width() - 11, this.y() + this.height() / 2, 1, 1, font, 'black')
+        }
+
+        for (const inter of this.interactables) {
+            inter.paint();
         }
     }
 
     click() {
         if (this.pokeable) {
-            poke(this.player.getIndex());
+            poke(this.player.index);
         }
     }
 }
@@ -676,15 +792,17 @@ class PlayerNamePlate extends CanvasInteractable {
  * CanvasCard
  */
 class CanvasCard extends CanvasInteractable {
-    constructor(card, scale, small) {
+    constructor(scale, small, card) {
         super();
-        this.card = card;
         this.scale = scale;
         this.small = small;
+        if (card) {
+            this.card = () => card
+        }
     }
 
-    getCard() {
-        return this.card;
+    card() {
+        return emptyCard();
     }
 
     x() {
@@ -726,7 +844,7 @@ class CanvasCard extends CanvasInteractable {
     paint() {
         if (this.isShown()) {
             drawCard(ctx,
-                this.hidden() ? new Card() : this.card,
+                this.hidden() ? emptyCard() : this.card(),
                 this.xCenter() + this.xPaintOffset(),
                 this.yCenter() + this.yPaintOffset(),
                 this.scale, this.small, this.dark(),
@@ -799,7 +917,9 @@ class ScoreSheet extends WrappedDOMElement {
     }
 
     height() {
-        let height = this.scoreVSpacing * this.getRounds().length
+        let roundsLength = this.getRounds() ? this.getRounds().length : 0
+
+        let height = this.scoreVSpacing * roundsLength
                         + this.headerHeight()
                         + this.footerHeight() + 2;
         let m = 12;
@@ -1015,7 +1135,7 @@ class ScoreSheet extends WrappedDOMElement {
     }
 
     paint() {
-        if (!gameState || !this.isShown()) {
+        if (!game || !this.isShown()) {
             return;
         }
         super.paint();
@@ -1082,7 +1202,7 @@ class PostGamePage extends WrappedDOMElement {
     }
 
     paint() {
-        if (gameState != GameState.POSTGAME) {
+        if (!game || game.state != 'POSTGAME') {
             return;
         }
 
@@ -1670,8 +1790,8 @@ class PostGameBidsTab extends PostGameTab {
 
             // trump
             if (player.index == this.dealers[this.selected]) {
-                drawCard(ctx, new Card(), width * this.columnXs[0] - 4, h0 + 30 - 4, smallCardScale, true, false, h0 + h / 2, undefined);
-                drawCard(ctx, new Card(), width * this.columnXs[0] - 2, h0 + 30 - 2, smallCardScale, true, false, h0 + h / 2, undefined);
+                drawCard(ctx, emptyCard(), width * this.columnXs[0] - 4, h0 + 30 - 4, smallCardScale, true, false, h0 + h / 2, undefined);
+                drawCard(ctx, emptyCard(), width * this.columnXs[0] - 2, h0 + 30 - 2, smallCardScale, true, false, h0 + h / 2, undefined);
                 drawCard(ctx, this.trumps[this.selected], width * this.columnXs[0], h0 + 30, smallCardScale, true, false, h0 + h / 2, undefined);
             }
 
@@ -1930,8 +2050,8 @@ class PostGamePlaysTab extends PostGameTab {
 
             // trump
             if (player.index == this.dealers[this.selected0]) {
-                drawCard(ctx, new Card(), width * this.columnXs[0] - 4, h0 + 30 - 4, smallCardScale, true, false, h0 + h / 2, undefined);
-                drawCard(ctx, new Card(), width * this.columnXs[0] - 2, h0 + 30 - 2, smallCardScale, true, false, h0 + h / 2, undefined);
+                drawCard(ctx, emptyCard(), width * this.columnXs[0] - 4, h0 + 30 - 4, smallCardScale, true, false, h0 + h / 2, undefined);
+                drawCard(ctx, emptyCard(), width * this.columnXs[0] - 2, h0 + 30 - 2, smallCardScale, true, false, h0 + h / 2, undefined);
                 drawCard(ctx, this.trumps[this.selected0], width * this.columnXs[0], h0 + 30, smallCardScale, true, false, h0 + h / 2, undefined);
             }
 
@@ -2341,7 +2461,7 @@ class InGameCanvas extends OhcCanvas {
                                 parent.ctx.fillStyle = '#C0C0C0';
                                 drawBox(parent.ctx, x, y, this.width(), this.height(), 10, undefined, true);
                             }
-                            if (parent.playerSelected === this.player) {
+                            if (parent.playerSelected && parent.playerSelected.id === this.player.id) {
                                 parent.ctx.fillStyle = '#C0C0C0';
                                 drawBox(parent.ctx, x, y, this.width(), this.height(), 10, undefined, false);
                             }
@@ -2351,7 +2471,7 @@ class InGameCanvas extends OhcCanvas {
                     }
 
                     click() {
-                        if (parent.playerSelected === this.player) {
+                        if (parent.playerSelected && parent.playerSelected.id === this.player.id) {
                             parent.playerSelected = undefined;
                         } else {
                             parent.playerSelected = this.player;
@@ -2376,9 +2496,9 @@ class InGameCanvas extends OhcCanvas {
                     isShown() {return this.members.length > 0;}
 
                     paint() {
-                        this.members = teams[this.number].members;
+                        this.members = game.teams[this.number].members.filter(i => i < game.players.length)
 
-                        this.interactables = this.members.map(p => parent.playerButtons[p.id]);
+                        this.interactables = this.members.map(i => parent.playerButtons[game.players[i].id])
 
                         if (!this.isShown()) {
                             return;
@@ -2390,7 +2510,7 @@ class InGameCanvas extends OhcCanvas {
                         parent.ctx.fillStyle = this.isMoused() && this.interactableMoused === this ? '#C0C0C0' : 'white';
                         drawBox(parent.ctx, x, y, this.width(), this.height(), 10, colors[this.number]);
 
-                        drawText(parent.ctx, teams[this.number].name, x + this.width() / 2, y + 10, 1, 1, fontBold, colors[this.number]);
+                        drawText(parent.ctx, game.teams[this.number].name, x + this.width() / 2, y + 10, 1, 1, fontBold, colors[this.number]);
                         for (let i = 0; i < this.members.length; i++) {
                             this.interactables[i].y0 = y + 10 + 20 * (i + 1);
                             this.interactables[i].paint();
@@ -2420,7 +2540,11 @@ class InGameCanvas extends OhcCanvas {
             paint() {
                 super.paint();
 
-                for (const player of players) {
+                if (!game) {
+                    return
+                }
+
+                for (const player of game.players) {
                     if (this.playerButtons[player.id] === undefined) {
                         this.playerButtons[player.id] = new this.PlayerButton(player);
                     }
@@ -2452,7 +2576,7 @@ class InGameCanvas extends OhcCanvas {
                 reteam(myPlayer.index)
             }
         });
-        document.getElementById("igRandomizeTeams").addEventListener('click', () => scrambleTeams());
+        document.getElementById("igRandomizeTeams").addEventListener('click', () => sendCommand({name: 'scrambleTeams'}));
 
         this.scoreSheet = new ScoreSheet('ig');
         this.scoreSheet.x = function () {return cachedWidth - (scoreWidth - scoreMargin);};
@@ -2462,8 +2586,8 @@ class InGameCanvas extends OhcCanvas {
         this.scoreSheet.getTeams = () => this.scoreSheetTeams();
         this.scoreSheet.getRounds = () => this.scoreSheetRounds();
         this.scoreSheet.getOptions = () => this.scoreSheetOptions();
-        this.scoreSheet.container = () => gameState == GameState.POSTGAME ? document.getElementById('postGameDiv') : document.getElementById('inGameDiv');
-        this.scoreSheet.isShown = () => gameState != GameState.PREGAME;
+        this.scoreSheet.container = () => game.state == 'POSTGAME' ? document.getElementById('postGameDiv') : document.getElementById('inGameDiv');
+        this.scoreSheet.isShown = () => game.state != 'PREGAME';
 
         class Hotdog extends PanelInteractable {
             constructor() {
@@ -2484,22 +2608,22 @@ class InGameCanvas extends OhcCanvas {
 
             paint() {
                 super.paint();
-                if (!gameState || gameState == GameState.PREGAME || gameState == GameState.POSTGAME || roundNumber >= rounds.length) {
+                if (!game || game.state == 'PREGAME' || game.state == 'POSTGAME' || game.roundNumber >= game.rounds.length) {
                     return;
                 }
 
                 this.clear();
                 this.fillContainer();
 
-                let handSize = rounds[roundNumber].handSize;
+                let handSize = game.rounds[game.roundNumber].handSize;
                 let totalBid = 0;
                 let totalMaxBidTaken = 0;
                 if (options.teams) {
-                    totalBid = teams.map(t => t.bid()).reduce((a, b) => a + b, 0);
-                    totalMaxBidTaken = teams.map(t => Math.max(t.bid(), t.taken())).reduce((a, b) => a + b, 0);
+                    totalBid = game.teams.map(t => t.bid()).reduce((a, b) => a + b, 0);
+                    totalMaxBidTaken = game.teams.map(t => Math.max(t.bid(), t.taken())).reduce((a, b) => a + b, 0);
                 } else {
-                    totalBid = players.map(p => p.hasBid() ? p.getBid() : 0).reduce((a, b) => a + b, 0);
-                    totalMaxBidTaken = players.map(p => p.hasBid() ? Math.max(p.getBid(), p.getTaken()) : 0).reduce((a, b) => a + b, 0);
+                    totalBid = game.players.map(p => p.bidded ? p.bid : 0).reduce((a, b) => a + b, 0);
+                    totalMaxBidTaken = game.players.map(p => p.bidded ? Math.max(p.bid, p.taken) : 0).reduce((a, b) => a + b, 0);
                 }
 
                 let leftMessage = totalBid <= handSize ?
@@ -2540,21 +2664,21 @@ class InGameCanvas extends OhcCanvas {
 
             paint() {
                 super.paint();
-                if (!gameState || gameState == GameState.PREGAME || gameState == GameState.POSTGAME || roundNumber >= rounds.length || myPlayer.kibitzer || !options.teams) {
+                if (!game || game.state == 'PREGAME' || game.state == 'POSTGAME' || game.roundNumber >= game.rounds.length || myPlayer.kibitzer || !options.teams) {
                     return;
                 }
 
                 this.clear();
                 this.fillContainer();
 
-                let bid = teams[myPlayer.team].members.reduce((b, p) => b + p.bid, 0);
-                let taken = teams[myPlayer.team].members.reduce((t, p) => t + p.taken, 0);
+                let bid = game.teams[myPlayer.team].members.reduce((b, p) => b + p.bid, 0);
+                let taken = game.teams[myPlayer.team].members.reduce((t, p) => t + p.taken, 0);
 
                 let leftMessage = 'Team bid: ' + bid;
                 let rightMessage = 'Team taken: ' + taken;
 
                 let handSize = myPlayer.hand.length;
-                if (!myPlayer.trick.isEmpty()) {
+                if (!isEmpty(myPlayer.trick)) {
                     handSize++;
                 }
                 let leftColor = bid - taken > handSize ? 'rgb(120, 0, 0)' : 'rgb(0, 0, 120)';
@@ -2573,25 +2697,24 @@ class InGameCanvas extends OhcCanvas {
             paint() {
                 super.paint();
                 if (this.isMoused()) {
-                    for (let k = 0; k < players.length; k++) {
-                        let x0 = Math.min(this.xCenter() + 50, cachedWidth - scoreWidth - lastTrickSeparation * (players.length - 1) - cardWidth / 2 - 10);
+                    for (let k = 0; k < game.players.length; k++) {
+                        let x0 = Math.min(this.xCenter() + 50, cachedWidth - scoreWidth - lastTrickSeparation * (game.players.length - 1) - cardWidth / 2 - 10);
                         let y0 = Math.max(this.yCenter(), cardHeight / 2 + 10);
-                        drawCard(ctx, players[k].getLastTrick(), x0 + lastTrickSeparation * k, y0, 1, true, false, -1, undefined);
+                        drawCard(ctx, game.players[k].lastTrick, x0 + lastTrickSeparation * k, y0, 1, true, false, -1, undefined);
                     }
                 }
             }
         }
-        this.lastTrick = new LastTrick(new Card(), smallCardScale, true);
-        this.lastTrick.player = function () {return players[leader];};
-        this.lastTrick.xCenter = function () {return this.player().getTakenX() + takenXSeparation * (this.player().getTaken() - 1);};
-        this.lastTrick.yCenter = function () {return this.player().getTakenY() + takenYSeparation * (this.player().getTaken() - 1);};
+        this.lastTrick = new LastTrick(smallCardScale, true);
+        this.lastTrick.seat = () => this.seats[game.leader]
+        this.lastTrick.xCenter = function () {return this.seat().getTakenX() + takenXSeparation * (this.seat().player().taken - 1);};
+        this.lastTrick.yCenter = function () {return this.seat().getTakenY() + takenYSeparation * (this.seat().player().taken - 1);};
         this.lastTrick.isShown = function () {
             return trickTaken
                 && takenTimer == 1
-                && gameState == GameState.PLAYING;
+                && game.state == 'PLAYING';
         };
-        this.lastTrick.isEnabled = function () {return gameState == GameState.PLAYING;};
-        let oldPaint = this.lastTrick.paint;
+        this.lastTrick.isEnabled = function () {return game.state == 'PLAYING';};
 
         let showCardButton = document.createElement('button');
         showCardButton.innerHTML = 'Show card';
@@ -2610,7 +2733,7 @@ class InGameCanvas extends OhcCanvas {
                 thisCanvas.cardInteractables !== undefined
                 && thisCanvas.cardInteractables.length > 0
                 && thisCanvas.cardInteractables[0].hidden()
-                && gameState == GameState.BIDDING;
+                && game.state == 'BIDDING';
 
         let showSpreadsheetButton = document.createElement('button');
         showSpreadsheetButton.innerHTML = 'Show spreadsheet';
@@ -2626,9 +2749,10 @@ class InGameCanvas extends OhcCanvas {
         this.showSpreadsheet.height = () => 32;
         this.showSpreadsheet.container = () => document.getElementById('inGameDiv');
         this.showSpreadsheet.isShown = () =>
-                (gameState == GameState.BIDDING || gameState == GameState.PLAYING)
-                && rounds[roundNumber] !== undefined
-                && rounds[roundNumber].handSize == 1;
+                game
+                && (game.state == 'BIDDING' || game.state == 'PLAYING')
+                && game.rounds[game.roundNumber] !== undefined
+                && game.rounds[game.roundNumber].handSize == 1;
 
         class Spreadsheet extends PanelInteractable {
             constructor() {
@@ -2650,9 +2774,9 @@ class InGameCanvas extends OhcCanvas {
 
             isShown() {
                 return showSpreadsheet
-                    && (gameState == GameState.BIDDING || gameState == GameState.PLAYING)
-                    && rounds[roundNumber] !== undefined
-                    && rounds[roundNumber].handSize == 1;
+                    && (game.state == 'BIDDING' || game.state == 'PLAYING')
+                    && game.rounds[game.roundNumber] !== undefined
+                    && game.rounds[game.roundNumber].handSize == 1;
             }
 
             paint() {
@@ -2673,7 +2797,7 @@ class InGameCanvas extends OhcCanvas {
 
                 let unbidFound = false;
                 for (let j = 0; j < players.length; j++) {
-                    let i = (rounds[roundNumber].dealer + 1 + j) % players.length;
+                    let i = (game.rounds[game.roundNumber].dealer + 1 + j) % players.length;
 
                     drawText(this.ctx, players[i].name, this.width() * 1 / 6, this.rowHeight * (2 * j + 3) / 2, 1, 1, fontSmall, 'black');
                     let cutoff = !unbidFound || players[i].bidded ? (spreadsheetRow ? spreadsheetRow[j] : 'todo') : '';
@@ -2688,32 +2812,6 @@ class InGameCanvas extends OhcCanvas {
             }
         }
         this.spreadsheet = new Spreadsheet();
-
-        // let acceptButton = document.createElement('button');
-        // acceptButton.classList.add(
-        //     'bg-white', 'rounded-lg', 'border', 'border-black', 'w-5', 'h-5',
-        //     'font-bold', 'text-sm', 'select-none', 'hover:bg-gray-300'
-        // );
-        // this.messageAccept = new WrappedDOMElement(acceptButton);
-        // this.messageAccept.x = () => (cachedWidth - scoreWidth) / 2 - 100;
-        // this.messageAccept.y = () => cachedHeight / 2 + 50;
-        // this.messageAccept.width = () => 80;
-        // this.messageAccept.height = () => 30;
-        // this.messageAccept.container = () => document.getElementById('inGameDiv');
-        // this.messageAccept.isShown = () => showMessageButtons;
-        //
-        // let declineButton = document.createElement('button');
-        // declineButton.classList.add(
-        //     'bg-white', 'rounded-lg', 'border', 'border-black', 'w-5', 'h-5',
-        //     'font-bold', 'text-sm', 'select-none', 'hover:bg-gray-300'
-        // );
-        // this.messageDecline = new WrappedDOMElement(declineButton);
-        // this.messageDecline.x = () => (cachedWidth - scoreWidth) / 2 + 20;
-        // this.messageDecline.y = () => cachedHeight / 2 + 50;
-        // this.messageDecline.width = () => 80;
-        // this.messageDecline.height = () => 30;
-        // this.messageDecline.container = () => document.getElementById('inGameDiv');
-        // this.messageDecline.isShown = () => showMessageButtons;
 
         this.decisionButtons = [];
 
@@ -2730,7 +2828,7 @@ class InGameCanvas extends OhcCanvas {
         this.leaveButton.width = () => 105;
         this.leaveButton.height = () => 32;
         this.leaveButton.container = () => document.getElementById('inGameDiv');
-        this.leaveButton.isShown = () => gameState == GameState.BIDDING || gameState == GameState.PLAYING || gameState == GameState.PASSING;
+        this.leaveButton.isShown = () => game && (game.state == 'BIDDING' || game.state == 'PLAYING' || game.state == 'PASSING');
 
         let endB = document.createElement('button');
         endB.innerHTML = 'End game';
@@ -2745,8 +2843,8 @@ class InGameCanvas extends OhcCanvas {
         this.endButton.width = () => 105;
         this.endButton.height = () => 32;
         this.endButton.container = () => document.getElementById('inGameDiv');
-        this.endButton.isEnabled = () => myPlayer !== undefined && myPlayer.isHost();
-        this.endButton.isShown = () => gameState == GameState.BIDDING || gameState == GameState.PLAYING || gameState == GameState.PASSING;
+        this.endButton.isEnabled = () => myPlayer !== undefined && myPlayer.host;
+        this.endButton.isShown = () => game && (game.state == 'BIDDING' || game.state == 'PLAYING' || game.state == 'PASSING');
 
         let claimB = document.createElement('button');
         claimB.innerHTML = 'Claim';
@@ -2761,7 +2859,7 @@ class InGameCanvas extends OhcCanvas {
         this.claimButton.width = () => 105;
         this.claimButton.height = () => 32;
         this.claimButton.container = () => document.getElementById('inGameDiv');
-        this.claimButton.isShown = () => gameState == GameState.BIDDING || gameState == GameState.PLAYING || gameState == GameState.PASSING;
+        this.claimButton.isShown = () => game && (game.state == 'BIDDING' || game.state == 'PLAYING' || game.state == 'PASSING');
 
         let chatF = document.createElement('input');
         chatF.type = 'text';
@@ -2779,14 +2877,15 @@ class InGameCanvas extends OhcCanvas {
         this.chatField.x = () => cachedWidth - this.chatField.width() - 10;
         this.chatField.y = () => cachedHeight - this.chatField.height() - 10;
         this.chatField.width = () => {
-            if (gameState == GameState.PREGAME) {
+            if (game.state == 'PREGAME') {
                 return 430;
             } else {
                 return scoreWidth - 20;
             }
         };
         this.chatField.height = () => 32;
-        this.chatField.container = () => stateDivs[state][gameState];
+        this.chatField.container = () => stateDivs[state][game ? getIntGameState(game.state) : 0];
+        this.chatField.isShown = () => game;
 
         let chatA = document.createElement('textarea');
         chatA.readOnly = true;
@@ -2800,18 +2899,19 @@ class InGameCanvas extends OhcCanvas {
         this.chatArea.y = () => {
             let minY = cachedHeight - this.chatField.height() - 15 - maxChatHeight;
             let divAbove = (options.teams ? this.teamInfo.y() + this.teamInfo.height() : this.hotdog.y() + this.hotdog.height()) + 10;
-            let maxNamePlate = gameState == GameState.PREGAME ? Math.max(...this.namePlates.map(np => np.player.pov() ? 0 : np.y() + np.height() + 10)) : 0;
+            let maxNamePlate = game.state == 'PREGAME' ? Math.max(...this.seats.map(seat => seat.pov() ? 0 : seat.y() + seat.height() + 10)) : 0;
             return Math.max(minY, divAbove, maxNamePlate);
         }
         this.chatArea.width = () => {
-            if (gameState == GameState.PREGAME) {
+            if (game.state == 'PREGAME') {
                 return 430;
             } else {
                 return scoreWidth - 20;
             }
         };
         this.chatArea.height = () => cachedHeight - this.chatArea.y() - this.chatField.height() - 15;
-        this.chatArea.container = () => stateDivs[state][gameState];
+        this.chatArea.container = () => stateDivs[state][game ? getIntGameState(game.state) : 0];
+        this.chatArea.isShown = () => game;
 
         this.divider = new CanvasInteractable();
         this.divider.draggable = true;
@@ -2859,7 +2959,7 @@ class InGameCanvas extends OhcCanvas {
         this.passButton.width = () => 90;
         this.passButton.height = () => 30;
         this.passButton.container = () => document.getElementById('inGameDiv');
-        this.passButton.isShown = () => gameState == GameState.PASSING && !myPlayer.passed && !myPlayer.isKibitzer();
+        this.passButton.isShown = () => game && game.state == 'PASSING' && !myPlayer.passed && !myPlayer.kibitzer;
         this.passButton.isEnabled = () => pass.list.length == pass.toPass;
         this.passButton.click = () => {}; // so cards don't deselect
 
@@ -2876,15 +2976,14 @@ class InGameCanvas extends OhcCanvas {
         this.abstainButton.width = () => 90;
         this.abstainButton.height = () => 30;
         this.abstainButton.container = () => document.getElementById('inGameDiv');
-        this.abstainButton.isShown = () => gameState == GameState.PASSING && !myPlayer.passed && !myPlayer.isKibitzer() && options.oregon;
+        this.abstainButton.isShown = () => game && game.state == 'PASSING' && !myPlayer.passed && !myPlayer.kibitzer && options.oregon;
         this.abstainButton.isEnabled = () => options.oregon;
         this.abstainButton.click = () => {}; // so cards don't deselect
 
         this.postGamePage = new PostGamePage();
 
         // filled out dynamically
-        this.namePlates = [];
-        this.robotButtons = [];
+        this.seats = [];
         this.cardInteractables = [];
         this.bidButtons = [];
 
@@ -2894,17 +2993,16 @@ class InGameCanvas extends OhcCanvas {
             this.bidButtons,
             [this.passButton, this.abstainButton],
             this.cardInteractables,
-            this.namePlates,
+            this.seats,
             [this.lastTrick],
             this.decisionButtons,
             this.miscInteractables,
-            this.robotButtons,
             [this.postGamePage]
         ];
     }
 
     cleanup() {
-        this.namePlates.length = 0;
+        this.seats.length = 0;
         this.cardInteractables.length = 0;
         this.bidButtons.length = 0;
         this.timerQueue.clear();
@@ -2915,39 +3013,43 @@ class InGameCanvas extends OhcCanvas {
     }
 
     scoreSheetPlayers() {
-        if (gameState != GameState.POSTGAME) {
-            return players;
+        if (game.state != 'POSTGAME') {
+            return game.players;
         } else {
             return this.pgPlayers;
         }
     }
 
     scoreSheetTeams() {
-        if (gameState != GameState.POSTGAME) {
-            return teams;
+        if (game.state != 'POSTGAME') {
+            return game.teams;
         } else {
             return this.pgTeams;
         }
     }
 
     scoreSheetRounds() {
-        if (gameState != GameState.POSTGAME) {
-            return rounds;
+        if (!game) {
+            return []
+        }
+
+        if (game.state != 'POSTGAME') {
+            return game.rounds;
         } else {
             return this.pgRounds;
         }
     }
 
     scoreSheetOptions() {
-        if (gameState != GameState.POSTGAME) {
-            return options;
+        if (game.state != 'POSTGAME') {
+            return game.options;
         } else {
             return this.pgOptions;
         }
     }
 
     clickOnNothing() {
-        if (gameState == GameState.PASSING && !myPlayer.passed) {
+        if (game.state == 'PASSING' && !myPlayer.passed) {
             pass.clear();
         } else {
             clearPreselected(0);
@@ -2955,16 +3057,17 @@ class InGameCanvas extends OhcCanvas {
     }
 
     customPaintFirst() {
-        if (gameState) {
-            this.adjustDivSizes();
-            this.paintTrump();
-            this.paintPlayers();
-            this.paintTaken();
+        if (game) {
+            this.adjustDivSizes()
+            this.refreshSeats()
+            this.paintTrump()
+            this.paintPlayers()
+            this.paintTaken()
         }
     }
 
     customPaintLast() {
-        if (gameState) {
+        if (game) {
             this.paintTrick();
             this.paintPreselected();
             if (message != '') {
@@ -2976,12 +3079,12 @@ class InGameCanvas extends OhcCanvas {
     }
 
     adjustDivSizes() {
-        if (gameState == GameState.BIDDING || gameState == GameState.PLAYING || gameState == GameState.PASSING) {
+        if (game.state == 'BIDDING' || game.state == 'PLAYING' || game.state == 'PASSING') {
             if (scoreWidth == 0) {
                 scoreWidth = 450;
             }
             scoreWidth = Math.max(400, Math.min(cachedWidth / 2, scoreWidth));
-        } else if (gameState == GameState.POSTGAME) {
+        } else if (game.state == 'POSTGAME') {
             let leftWidth = cachedWidth - scoreWidth;
             igPgLeft.style.width = leftWidth + 'px';
             igPgRight.style.width = scoreWidth + 'px';
@@ -2989,36 +3092,37 @@ class InGameCanvas extends OhcCanvas {
     }
 
     paintTrump() {
-        if (gameState == GameState.PREGAME || gameState == GameState.POSTGAME || trump.isEmpty()) {
+        if (!game || game.state == 'PREGAME' || game.state == 'POSTGAME' || !game.trump || isEmpty(game.trump)) {
             return;
         }
 
         let x = 50;
         let y = 66;
 
-        drawCard(ctx, new Card(), x - 4, y - 4, 1, true, false, -1, undefined);
-        drawCard(ctx, new Card(), x - 2, y - 2, 1, true, false, -1, undefined);
-        drawCard(ctx, trump, x, y, 1, true, false, -1, undefined);
+        drawCard(ctx, emptyCard(), x - 4, y - 4, 1, true, false, -1, undefined);
+        drawCard(ctx, emptyCard(), x - 2, y - 2, 1, true, false, -1, undefined);
+        drawCard(ctx, game.trump, x, y, 1, true, false, -1, undefined);
     }
 
     paintPlayers() {
-        if (gameState == GameState.PREGAME || gameState == GameState.POSTGAME) {
+        if (game.state == 'PREGAME' || game.state == 'POSTGAME') {
             return;
         }
 
-        for (const player of players) {
-            let x = player.getX();
-            let y = player.getY();
-            let pos = player.getJust();
+        for (const seat of this.seats) {
+            let x = seat.getX()
+            let y = seat.getY()
+            let pos = seat.getJust()
+            let player = seat.player()
 
             let separation = 10;
 
             if (player !== myPlayer) {
-                let h = player.getHand().length;
+                let h = player.hand.length;
                 let yOffset = 40;
                 for (let i = 0; i < h; i++) {
                     drawCard(ctx,
-                        player.getHand()[i],
+                        player.hand[i],
                         x + i * separation - (h - 1) * separation / 2 - (pos - 1) * maxWid / 2,
                         y - yOffset,
                         smallCardScale, true, false, -1, undefined
@@ -3026,18 +3130,18 @@ class InGameCanvas extends OhcCanvas {
                 }
             }
 
-            if (gameState == GameState.PASSING) {
+            if (game.state == 'PASSING') {
                 if (player.passed) {
-                    let startX = player.getPassX();
-                    let startY = player.getPassY();
+                    let startX = seat.getPassX();
+                    let startY = seat.getPassY();
 
                     let passedTo = player.index;
                     if (player.passedTo != -1) {
                         passedTo = player.passedTo;
                     }
 
-                    let endX = players[passedTo].getPassX();
-                    let endY = players[passedTo].getPassY();
+                    let endX = this.seats[passedTo].getPassX();
+                    let endY = this.seats[passedTo].getPassY();
 
                     let x = player.getBidTimer() * endX + (1 - player.getBidTimer()) * startX;
                     let y = player.getBidTimer() * endY + (1 - player.getBidTimer()) * startY;
@@ -3056,50 +3160,54 @@ class InGameCanvas extends OhcCanvas {
     }
 
     paintTrick() {
-        if (gameState == GameState.PREGAME || gameState == GameState.POSTGAME) {
+        if (!game || game.state == 'PREGAME' || game.state == 'POSTGAME') {
             return;
         }
 
-        let N = players.length;
-        for (let i = 0; i < players.length; i++) {
-            let iRelToLeader = (leader + i) % N;
-            let iRelToMe = (iRelToLeader - myPlayer.getIndex() + N) % N;
-            let player = players[iRelToLeader];
-            if (!player.getTrick().isEmpty()) {
-                if (player.getTrickRad() == -1) {
+        let N = game.players.length;
+        for (let i = 0; i < this.seats.length; i++) {
+            let iRelToLeader = (game.leader + i) % N;
+            let iRelToMe = (iRelToLeader - myPlayer.index + N) % N;
+            let seat = this.seats[iRelToLeader]
+            let player = seat.player()
+            if (!isEmpty(player.trick)) {
+                if (seat.trickRad == -1) {
                     let baseTrickRad = N >= 8 ? 110 : 70;
-                    player.setTrickRad(baseTrickRad + 10 * Math.random());
+                    seat.trickRad = baseTrickRad + 10 * Math.random();
                 }
 
-                let startX = player.getX();
-                let startY = player.getY();
+                let startX = seat.getX();
+                let startY = seat.getY();
 
-                if (player === myPlayer && cardJustPlayed !== undefined) {
+                if (player.index == myPlayer.index && cardJustPlayed !== undefined) {
                     startX = (cachedWidth - scoreWidth) / 2 + cardJustPlayed * cardSeparation
-                                - (myPlayer.getHand().length) * cardSeparation / 2;
+                                - (myPlayer.hand.length) * cardSeparation / 2;
                     startY = cachedHeight - handYOffset;
                 }
 
                 let endX = (cachedWidth - scoreWidth) / 2
-                            - player.getTrickRad() * Math.sin(2 * Math.PI * iRelToMe / players.length);
+                            - seat.trickRad * Math.sin(2 * Math.PI * iRelToMe / N);
                 let endY = cachedHeight / 2 - 50
-                            + player.getTrickRad() * Math.cos(2 * Math.PI * iRelToMe / players.length);
+                            + seat.trickRad * Math.cos(2 * Math.PI * iRelToMe / N);
 
-                let x = player.getTrickTimer() * endX + (1 - player.getTrickTimer()) * startX;
-                let y = player.getTrickTimer() * endY + (1 - player.getTrickTimer()) * startY;
-                if (player.getTrickTimer() > 0) {
-                    drawCard(ctx, player.getTrick(), x, y, 1, true, false, -1, options.teams && preferences.teamColorTrick ? colors[player.team] : undefined);
+                let x = seat.trickTimer * endX + (1 - seat.trickTimer) * startX;
+                let y = seat.trickTimer * endY + (1 - seat.trickTimer) * startY;
+                if (seat.trickTimer > 0) {
+                    drawCard(ctx, player.trick, x, y, 1, true, false, -1, game.options.teams && preferences.teamColorTrick ? colors[player.team] : undefined);
                 }
+            } else {
+
             }
         }
     }
 
     paintPreselected() {
-        if (gameState == GameState.PREGAME || gameState == GameState.POSTGAME) {
+        if (game.state == 'PREGAME' || game.state == 'POSTGAME') {
             return;
         }
 
-        for (const inter of preselected) {
+        for (let i of preselected) {
+            let inter = this.cardInteractables[i]
             drawText(ctx,
                 inter.preselection + 1,
                 inter.x() + 20,
@@ -3110,16 +3218,17 @@ class InGameCanvas extends OhcCanvas {
     }
 
     paintTaken() {
-        if (gameState == GameState.PREGAME || gameState == GameState.POSTGAME) {
+        if (game.state == 'PREGAME' || game.state == 'POSTGAME') {
             return;
         }
 
-        for (const player of players) {
-            for (let j = 0; j < player.getTaken(); j++) {
-                let takenX = player.getTakenX();
-                let takenY = player.getTakenY();
+        for (let seat of this.seats) {
+            let player = seat.player()
+            for (let j = 0; j < player.taken; j++) {
+                let takenX = seat.getTakenX();
+                let takenY = seat.getTakenY();
 
-                let isLastTrick = player.getIndex() == leader && j == player.getTaken() - 1;
+                let isLastTrick = player.index == game.leader && j == player.taken - 1;
 
                 let x = takenX + takenXSeparation * j;
                 let y = takenY + takenYSeparation * j;
@@ -3129,7 +3238,7 @@ class InGameCanvas extends OhcCanvas {
                 }
 
                 if (!isLastTrick || !this.lastTrick.isShown()) {
-                    drawCard(ctx, new Card(), x, y, smallCardScale, true, false, -1, undefined);
+                    drawCard(ctx, emptyCard(), x, y, smallCardScale, true, false, -1, undefined);
                 }
             }
         }
@@ -3176,62 +3285,50 @@ class InGameCanvas extends OhcCanvas {
         this.postGamePage.clearData();
     }
 
-    resetNamePlatesAndRobotButtons() {
-        this.namePlates.length = 0;
-        for (const button of this.robotButtons) {
-            button.dispose();
+    refreshSeats() {
+        if (this.seats.length == game.players.length) {
+            return
         }
-        this.robotButtons.length = 0;
 
-        for (const player of players) {
-            this.namePlates.push(new PlayerNamePlate(player));
+        for (const seat of this.seats) {
+            seat.dispose()
+        }
+        this.seats.length = 0
 
-            let button = document.createElement('button');
-            button.innerHTML = 'Robot';
-            button.classList.add(
-                'bg-white', 'rounded-lg', 'border', 'border-black', 'w-5', 'h-5',
-                'font-bold', 'text-sm', 'select-none', 'hover:bg-gray-300'
-            );
-            button.addEventListener('click', () => replaceWithRobot(player.index));
-
-            let inter = new WrappedDOMElement(button);
-            inter.x = () => player.getX() + maxWid * (1 - player.getJust()) / 2 - 30;
-            inter.y = () => player.getY() - 55;
-            inter.width = () => 60;
-            inter.height = () => 30;
-            inter.isShown = () => player.disconnected && myPlayer.isHost() && !player.replacedByRobot;
-            inter.container = () => document.getElementById('inGameDiv')
-
-            this.robotButtons.push(inter);
+        for (const player of game.players) {
+            this.seats.push(new PlayerSeat(player.index))
         }
     }
 
     makeHandInteractables() {
         this.cardInteractables.length = 0;
-        for (let i = 0; i < myPlayer.getHand().length; i++) {
-            let card = new CanvasCard(myPlayer.getHand()[i], 1, false);
-            card.index = function () {return myPlayer.getHand().indexOf(this.getCard());};
+        let h = game.rounds[game.roundNumber].handSize
+        for (let i = 0; i < h; i++) {
+            let card = new CanvasCard(1, false);
+            card.card = () => myPlayer.hand[i]
+            card.index = i
             card.xCenter = function () {
-                return (cachedWidth - scoreWidth) / 2 + this.index() * cardSeparation
-                        - (myPlayer.getHand().length - 1) * cardSeparation / 2;
+                return (cachedWidth - scoreWidth) / 2 + this.index * cardSeparation
+                        - (myPlayer.hand.length - 1) * cardSeparation / 2;
             };
             card.yCenter = function () {
-                return cachedHeight - handYOffset - (this.preselection != -1 || pass && pass.isSelected(this.getCard()) ? preselectedCardYOffset : 0);
+                return cachedHeight - handYOffset - (this.preselection != -1 || pass && pass.isSelected(this.card()) ? preselectedCardYOffset : 0);
             };
             card.yPaintOffset = function () {
-                return (card.isMoused() ? -10 : 0) + (pass && pass.isSelected(this.getCard()) ? -10 : 0);
+                return (card.isMoused() ? -10 : 0) + (pass && pass.isSelected(this.card()) ? -10 : 0);
             };
             card.isEnabled = function () {
-                if (gameState == GameState.BIDDING) {
-                    return myPlayer.hasBid();
+                if (game.state == 'BIDDING') {
+                    return myPlayer.bidded;
                 } else {
-                    if (turn == myPlayer.getIndex() && myPlayer.getTrick().isEmpty()) {
-                        return canPlayThis(this.getCard());
+                    if (game.turn == myPlayer.index && isEmpty(myPlayer.trick)) {
+                        return canPlayThis(this.card());
                     } else {
                         return true;
                     }
                 }
             };
+            card.isShown = () => myPlayer.hand !== undefined && myPlayer.hand.length > i
             card.hidden = function () {return !showOneCard;};
             card.dark = function () {
                 return card.isMoused() || preselected.length > 0 && this.preselection == -1;
@@ -3239,22 +3336,22 @@ class InGameCanvas extends OhcCanvas {
             card.preselection = -1;
             card.cursor = () => 'pointer';
             card.click = function () {
-                if (turn == myPlayer.getIndex() && gameState == GameState.PLAYING && myPlayer.getTrick().isEmpty()) {
+                if (game.turn == myPlayer.index && game.state == 'PLAYING' && isEmpty(myPlayer.trick)) {
                     if (preselected.length == 0) {
                         playCard(this);
                     } else {
                         return;
                     }
-                } else if (gameState == GameState.PASSING && !myPlayer.passed) {
-                    if (pass.isSelected(this.getCard())) {
-                        pass.deselect(this.getCard());
+                } else if (game.state == 'PASSING' && !myPlayer.passed) {
+                    if (pass.isSelected(this.card())) {
+                        pass.deselect(this.card());
                     } else {
-                        pass.select(this.getCard());
+                        pass.select(this.card());
                     }
                 } else {
                     if (this.preselection == -1) {
                         this.preselection = preselected.length;
-                        preselected.push(this);
+                        preselected.push(this.index);
                     } else {
                         clearPreselected(this.preselection);
                     }
@@ -3271,10 +3368,11 @@ class InGameCanvas extends OhcCanvas {
 
     makeBidInteractables() {
         this.bidButtons.length = 0;
-        for (let i = 0; i <= myPlayer.getHand().length; i++) {
+        let h = game.rounds[game.roundNumber].handSize
+        for (let i = 0; i <= h; i++) {
             let button = new CanvasButton(i);
             button.x = function () {
-                return (cachedWidth - scoreWidth) / 2 + i * 40 - myPlayer.getHand().length * 40 / 2 - 15;
+                return (cachedWidth - scoreWidth) / 2 + i * 40 - h * 40 / 2 - 15;
             };
             button.y = function () {
                 return cachedHeight - 210 - 15;
@@ -3282,16 +3380,16 @@ class InGameCanvas extends OhcCanvas {
             button.width = function () {return 30;};
             button.height = function () {return 30;};
             button.isEnabled = function () {
-                if (myPlayer.getIndex() != dealer) {
+                if (myPlayer.index != game.rounds[game.roundNumber].dealer) {
                     return true;
                 }
                 let sum = i;
-                for (const player of players) {
-                    if (player.hasBid() && player !== myPlayer) {
-                        sum += player.getBid();
+                for (const player of game.players) {
+                    if (player.bidded && player.index != myPlayer.index) {
+                        sum += player.bid;
                     }
                 }
-                return sum != myPlayer.getHand().length;
+                return sum != h;
             };
             button.cursor = () => 'pointer';
             button.click = function () {makeBid(i);};
@@ -3375,27 +3473,41 @@ class InGameCanvas extends OhcCanvas {
 }
 
 function canPlayThis(card) {
-    return canPlay.filter(c => c.matches(card)).length > 0;
+    if (!canPlay) {
+        return false
+    }
+    return canPlay.filter(c => c.num == card.num && c.suit == card.suit).length > 0;
     /*if (turn == leader) {
         return true;
     } else {
         let followIndex = mode == 'Hearts' ? (myPlayer.index + players.length - 1) % players.length : leader;
-        let led = players[followIndex].getTrick().suit;
-        return card.suit == led || myPlayer.getHand().filter(c => c.suit == led).length == 0;
+        let led = players[followIndex].trick.suit;
+        return card.suit == led || myPlayer.hand.filter(c => c.suit == led).length == 0;
     }*/
 }
 
 function clearPreselected(index) {
     for (let i = index; i < preselected.length; i++) {
-        preselected[i].preselection = -1;
+        let inter = canvas.cardInteractables[preselected[i]]
+        inter.preselection = -1;
     }
     preselected.splice(index, preselected.length - index);
 }
 
-function shiftPreselected(index) {
+function shiftPreselected() {
+    let index = preselected[0]
+    canvas.cardInteractables[index].preselection = -1
     preselected.shift();
-    for (const inter of preselected) {
+    for (let j = 0; j < preselected.length; j++) {
+        let i = preselected[j]
+        let inter = canvas.cardInteractables[i]
         inter.preselection--;
+        if (i > index) {
+            preselected[j]--
+            let newInter = canvas.cardInteractables[i - 1]
+            newInter.preselection = inter.preselection
+            inter.preselection = -1
+        }
     }
 }
 
@@ -3475,27 +3587,24 @@ function pushBasicTimer(func, delay) {
 }
 
 function animateBids() {
+    let stayTe = new TimerEntry(bidStayTime);
+    canvas.pushTimerEntry(stayTe);
+
     let animateTe = new TimerEntry(animationTime);
     animateTe.onAction = function () {
         let t = Math.min(this.elapsedTime / animationTime, 1);
-        for (const player of players) {
-            player.setBidTimer(t);
+        for (const seat of canvas.seats) {
+            seat.bidTimer = t;
         }
     }
-    canvas.pushTimerEntry(animateTe, true);
-
-    let stayTe = new TimerEntry(bidStayTime);
-    canvas.pushTimerEntry(stayTe, true);
-
-    let bufferTe = new TimerEntry(0);
-    canvas.pushTimerEntry(bufferTe, true);
+    canvas.pushTimerEntry(animateTe);
 }
 
 function animatePlay(index) {
     let animateTe = new TimerEntry(animationTime);
     animateTe.onAction = function () {
         let t = Math.min(this.elapsedTime / animationTime, 1);
-        players[index].setTrickTimer(t);
+        canvas.seats[index].trickTimer = t
     }
     canvas.pushTimerEntry(animateTe);
 }
@@ -3507,8 +3616,8 @@ function animatePass() {
     let animateTe = new TimerEntry(animationTime);
     animateTe.onAction = function () {
         let t = Math.min(this.elapsedTime / animationTime, 1);
-        for (const player of players) {
-            player.setBidTimer(t);
+        for (const seat of canvas.seats) {
+            seat.bidTimer = t;
         }
     }
     canvas.pushTimerEntry(animateTe);
@@ -3518,19 +3627,19 @@ function animatePass() {
 }
 
 function animateTrickTake(index) {
-    let stayTe = new TimerEntry(trickStayTime);
-    stayTe.onLastAction = function () {
-        for (const player of players) {
-            player.newTrickReset();
-        }
-        leader = index;
-    }
-    canvas.pushTimerEntry(stayTe);
+    // let stayTe = new TimerEntry(trickStayTime);
+    // stayTe.onLastAction = function () {
+    //     for (const player of players) {
+    //         player.newTrickReset();
+    //     }
+    //     leader = index;
+    // }
+    // canvas.pushTimerEntry(stayTe);
 
     let animateTe = new TimerEntry(animationTime);
     animateTe.onFirstAction = function () {
-        players[index].incTaken();
-        takenTimer = 0;
+        // players[index].incTaken();
+        // takenTimer = 0;
         trickTaken = true;
     }
     animateTe.onAction = function () {
@@ -3555,8 +3664,8 @@ function showResultMessage() {
     te.onFirstAction = function () {
         let pronoun = options.teams ? 'Your team' : 'You';
 
-        let bid = options.teams ? teams[myPlayer.team].members.reduce((b, p) => b + p.bid, 0) : myPlayer.getBid();
-        let taken = options.teams ? teams[myPlayer.team].members.reduce((t, p) => t + p.taken, 0) : myPlayer.getTaken();
+        let bid = options.teams ? teams[myPlayer.team].members.reduce((b, p) => b + p.bid, 0) : myPlayer.bid;
+        let taken = options.teams ? teams[myPlayer.team].members.reduce((t, p) => t + p.taken, 0) : myPlayer.taken;
 
         if (bid == taken) {
             message = pronoun + ' made it!';
@@ -3591,10 +3700,10 @@ function showClaimMessage(data) {
             canvas.removeHandInteractables();
             for (const player of players) {
                 player.setHand([]);
-                player.trick = new Card();
+                player.trick = emptyCard();
             }
-        } else if (data.claimer != myPlayer.getIndex()) {
-            players[data.claimer].setHand(players[data.claimer].getHand().map(c => new Card()));
+        } else if (data.claimer != myPlayer.index) {
+            players[data.claimer].setHand(players[data.claimer].hand.map(c => emptyCard()));
         }
 
         message = 'Claim ' + (data.accepted ? 'accepted.' : 'rejected.');
@@ -3603,73 +3712,6 @@ function showClaimMessage(data) {
         message = '';
     }
     canvas.pushTimerEntry(te);
-}
-
-// Card
-class Card {
-    constructor(num, suit) {
-        if (!arguments.length) {
-            this.num = 0;
-            this.suit = 0;
-        } else {
-            this.num = num;
-            this.suit = suit;
-        }
-    }
-
-    toDict() {
-        return {num: this.num, suit: this.suit};
-    }
-
-    isEmpty() {
-        return this.num == 0;
-    }
-
-    toString() {
-        if (this.isEmpty()) {
-            return '0';
-        }
-
-        let ans = '';
-        if (this.num < 10) {
-            ans += this.num;
-        } else if (this.num == 10) {
-            ans += 'T';
-        } else if (this.num == 11) {
-            ans += 'J';
-        } else if (this.num == 12) {
-            ans += 'Q';
-        } else if (this.num == 13) {
-            ans += 'K';
-        } else if (this.num == 14) {
-            ans += 'A';
-        }
-        if (this.suit == 0) {
-            ans += 'C';
-        } else if (this.suit == 1) {
-            ans += 'D';
-        } else if (this.suit == 2) {
-            ans += 'S';
-        } else if (this.suit == 3) {
-            ans += 'H';
-        }
-
-        return ans;
-    }
-
-    gtSort(card) {
-        if (this.suit == card.suit && this.num == card.num) {
-            return 0;
-        } else if (this.suit > card.suit || (this.suit == card.suit && this.num > card.num)) {
-            return 1;
-        } else {
-            return -1;
-        }
-    }
-
-    matches(card) {
-        return this.num == card.num && this.suit == card.suit;
-    }
 }
 
 /*
@@ -3691,6 +3733,36 @@ var GameStateEnum = function() {
     this.POSTGAME = 3;
     this.PASSING = 4;
 };
+
+var gameStateToInt = {
+    'PREGAME': 0,
+    'BIDDING': 1,
+    'PLAYING': 2,
+    'POSTGAME': 3,
+    'PASSING': 4
+}
+function getIntGameState(state) {
+    return gameStateToInt[state]
+}
+
+function update(obj, data) {
+    if (data.type == 'pass') {
+        return
+    }
+
+    let x = obj
+    for (const key of data.path) {
+        x = x[key]
+    }
+
+    if (data.type == 'set') {
+        x[data.key] = data.value
+    } else if (data.type == 'insert') {
+        x.splice(data.index, 0, data.value)
+    } else if (data.type == 'remove') {
+        x.splice(data.index, 1)
+    }
+}
 
 /*
  * options
@@ -3831,7 +3903,7 @@ class ClientPlayer {
                 }
 
                 for (let i = 0; i < canvas.cardInteractables.length; i++) {
-                    if (canvas.cardInteractables[i].getCard().matches(card)) {
+                    if (canvas.cardInteractables[i].card().matches(card)) {
                         canvas.cardInteractables.splice(i, 1);
                     }
                 }
@@ -3908,7 +3980,7 @@ class ClientPlayer {
         this.trickTimer = 0;
 
         if (this == myPlayer) {
-            let justPlayed = canvas.cardInteractables[cardJustPlayed].getCard();
+            let justPlayed = canvas.cardInteractables[cardJustPlayed].card();
 
             let toRemove = undefined;
             if (card.matches(justPlayed)) {
@@ -3926,7 +3998,7 @@ class ClientPlayer {
                 canvas.cardInteractables.splice(cardJustPlayed, 1);
             } else {
                 for (let i = 0; i < canvas.cardInteractables.length; i++) {
-                    if (canvas.cardInteractables[i].getCard().matches(card)) {
+                    if (canvas.cardInteractables[i].card().matches(card)) {
                         canvas.cardInteractables.splice(i, 1);
                     }
                 }
@@ -3947,8 +4019,8 @@ class ClientPlayer {
 
     newGameReset() {
         this.score = 0;
-        this.trick = new Card();
-        this.lastTrick = new Card();
+        this.trick = emptyCard();
+        this.lastTrick = emptyCard();
         this.bids = [];
         this.scores = [];
     }
@@ -3957,8 +4029,8 @@ class ClientPlayer {
         this.bid = 0;
         this.taken = 0;
         this.bidded = false;
-        this.trick = new Card();
-        this.lastTrick = new Card();
+        this.trick = emptyCard();
+        this.lastTrick = emptyCard();
         this.pass = [];
         this.passed = false;
         this.passedTo = -1;
@@ -3971,7 +4043,7 @@ class ClientPlayer {
 
     newTrickReset() {
         this.lastTrick = this.trick;
-        this.trick = new Card();
+        this.trick = emptyCard();
 
         this.trickTimer = 0;
         this.trickRad = -1;
@@ -4000,94 +4072,6 @@ class ClientTeam {
 
     taken() {
         return this.members.map(p => p.taken).reduce((a, b) => a + b, 0);
-    }
-}
-
-function updatePlayersOnCanvas() {
-    setPlayerPositions();
-    if (stateCanvas === canvas) {
-        canvas.resetNamePlatesAndRobotButtons();
-    }
-
-    igKibitzer.checked = myPlayer !== undefined && myPlayer.isKibitzer();
-
-    if (!myPlayer.isHost()) {
-        igRobots.disabled = true;
-        igDoubleDeck.disabled = true;
-        igTeams.disabled = true;
-        igOregon.disabled = true;
-        disableButton(igStart);
-        disableButton(document.getElementById('igRandomizeTeams'));
-    } else {
-        igRobots.disabled = false;
-        igDoubleDeck.disabled = false;
-        igTeams.disabled = false;
-        igOregon.disabled = false;
-        enableButton(igStart);
-        enableButton(document.getElementById('igRandomizeTeams'));
-    }
-}
-
-function setPlayerPositions() {
-    let N = players.length;
-    let cut1 = Math.floor((N - 1) / 3);
-    let cut2 = 2 * cut1;
-    if ((N - 1) % 3 != 0) {
-        cut2++;
-    }
-    if ((N - 1) % 3 == 2) {
-        cut1++;
-    }
-
-    let myIndex = Math.min(myPlayer.getIndex(), N - 1);
-    for (const player of players) {
-        let index = (player.getIndex() - myIndex + N - 1) % N;
-        if (index < cut1) {
-            player.getX = function () {return 10;};
-            player.getY = function () {return cachedHeight * (cut1 - index) / (cut1 + 1);};
-            player.getJust = function () {return 0;};
-            player.getTakenX = function () {return player.getX() + 20;};
-            player.getTakenY = function () {return player.getY() + 50;};
-            player.getPassX = () => player.getX() + 250;
-            player.getPassY = () => player.getY();
-            player.pov = () => false;
-        } else if (index < cut2) {
-            player.getX = function () {return (cachedWidth - scoreWidth) * (index - cut1 + 1) / (cut2 - cut1 + 1);};
-            player.getY = function () {return 85;};
-            player.getJust = function () {return 1;};
-            player.getTakenX = function () {return player.getX() + 110;};
-            player.getTakenY = function () {return player.getY() - 35;};
-            player.getPassX = () => player.getX();
-            player.getPassY = () => player.getY() + 100;
-            player.pov = () => false;
-        } else if (index < N - 1) {
-            player.getX = function () {return cachedWidth - scoreWidth - 10;};
-            player.getY = function () {return cachedHeight * (index - cut2 + 1) / (N - 1 - cut2 + 1);};
-            player.getJust = function () {return 2;};
-            player.getTakenX = function () {return player.getX() - 90;};
-            player.getTakenY = function () {return player.getY() + 50;};
-            player.getPassX = () => player.getX() - 250;
-            player.getPassY = () => player.getY();
-            player.pov = () => false;
-        } else {
-            player.getX = function () {return (cachedWidth - scoreWidth) / 2;};
-            player.getY = function () {return cachedHeight - 20;};
-            player.getJust = function () {return 1;};
-            player.getTakenX = function () {
-                if (rounds[roundNumber] === undefined) {
-                    return 0;
-                } else {
-                    return player.getX() + Math.max(
-                        260,
-                        (rounds[roundNumber].handSize - 1) * cardSeparation / 2 + cardWidth / 2 + 20
-                    );
-                }
-            };
-            player.getTakenY = function () {return player.getY() - 50;};
-            player.getPassX = () => player.getX();
-            player.getPassY = () => player.getY() - 300;
-            player.pov = () => true;
-        }
     }
 }
 
@@ -4241,7 +4225,7 @@ function execute() {
         changeState(ClientState.LOGIN_MENU);
     }
 
-	paint();
+	refresh();
 }
 
 function addEventListeners() {
@@ -4290,37 +4274,33 @@ function addEventListeners() {
 
     igRobots = document.getElementById("igRobots");
     igRobots.addEventListener('change', () => {
-        options.robots = igRobots.value;
-        sendOptionsUpdate();
+        sendCommand({name:'updateOptions', options: {'robots': igRobots.value}})
     });
 
     igDoubleDeck = document.getElementById("igDoubleDeck");
     igDoubleDeck.addEventListener('change', () => {
-        options.D = igDoubleDeck.checked ? 2 : 1;
-        sendOptionsUpdate();
+        sendCommand({name:'updateOptions', options: {'D': igDoubleDeck.checked ? 2 : 1}})
     });
 
     igTeams = document.getElementById("igTeams");
     igTeams.addEventListener('change', () => {
-        options.teams = igTeams.checked;
-        sendOptionsUpdate();
+        sendCommand({name:'updateOptions', options: {'teams': igTeams.checked}})
     });
 
     igOregon = document.getElementById("igOregon");
     igOregon.addEventListener('change', () => {
-        options.oregon = igOregon.checked;
-        sendOptionsUpdate();
+        sendCommand({name:'updateOptions', options: {'oregon': igOregon.checked}})
     });
 
     igStart = document.getElementById("igStart");
-    igStart.addEventListener('click', () => {startGame();});
+    igStart.addEventListener('click', () => {sendCommand({name: 'startGame'})});
 
     igBack = document.getElementById("igBack");
-    igBack.addEventListener('click', () => {leaveGame();});
+    igBack.addEventListener('click', () => {sendCommand({name: 'disconnectUser'})});
 
     document.getElementById("igBack3").addEventListener('click', () => {
         if (autojoinId) {
-            leaveGame();
+            sendCommand({name: 'disconnectUser'})
         } else {
             // viewing a saved game
             document.location = baseUrl;
@@ -4329,12 +4309,15 @@ function addEventListeners() {
     document.getElementById("igDownload").addEventListener('click', () => download());
 
     igLobby.addEventListener('click', () => {
-        changeGameState(GameState.PREGAME);
+        changeGameState('PREGAME');
     });
 }
 
 function loadVars() {
     games = [];
+
+    gameCache = {}
+    updateCallbacks = new UpdateCallbacks()
 
     players = [];
     teams = [];
@@ -4469,21 +4452,15 @@ function changeState(newState) {
     }
 }
 
-function changeGameState(newState) {
+function changeGameState(oldState, newState) {
     switch (newState) {
-	case GameState.PREGAME:
-        igKibitzer.checked = myPlayer !== undefined && myPlayer.isKibitzer();
-        igRobots.value = options.robots;
-        igDoubleDeck.checked = options.D == 2;
-        igTeams.checked = options.teams;
-        igOregon.checked = options.oregon;
-
-        if (mode == 'Oh Hell') {
+	case 'PREGAME':
+        if (game.mode == 'Oh Hell') {
             document.getElementById("doubleDeckOptionsRow").style.display = 'table-row';
             document.getElementById("teamsOptionsRow").style.display = 'table-row';
             document.getElementById("oregonOptionsRow").style.display = 'none';
         }
-        if (mode == 'Hearts') {
+        if (game.mode == 'Hearts') {
             document.getElementById("doubleDeckOptionsRow").style.display = 'none';
             document.getElementById("teamsOptionsRow").style.display = 'none';
             document.getElementById("oregonOptionsRow").style.display = 'table-row';
@@ -4491,28 +4468,34 @@ function changeGameState(newState) {
 
         scoreWidth = 0;
 		break;
-    case GameState.BIDDING:
+    case 'BIDDING':
         break;
-    case GameState.PLAYING:
+    case 'PLAYING':
 		break;
-    case GameState.POSTGAME:
+    case 'POSTGAME':
 		break;
 	default:
 		break;
 	}
-    if (gameState !== undefined) {
-        stateDivs[state][gameState].style.display = 'none';
+
+    if (oldState !== undefined) {
+        stateDivs[state][getIntGameState(oldState)].style.display = 'none';
     }
-	gameState = newState;
-    stateDivs[state][gameState].style.display = 'flex';
+    stateDivs[state][getIntGameState(newState)].style.display = 'flex';
 }
 
-function paint() {
+// refresh
+function refresh() {
     updateElementSizes();
+
+    refreshMyPlayer()
+    refreshGameCache()
+
+    updateOptionsElements();
 
 	stateCanvas.paint();
 
-    window.requestAnimationFrame(paint);
+    window.requestAnimationFrame(refresh);
 }
 
 function updateElementSizes() {
@@ -4523,6 +4506,168 @@ function updateElementSizes() {
     frame.height = cachedHeight;
 }
 
+function refreshMyPlayer() {
+    if (!game) {
+        return
+    }
+
+    let myIndex = 0
+    if (
+        !myPlayer
+        || !game.players[myPlayer.index]
+        || game.players[myPlayer.index].id != username
+    ) {
+        for (const player of game.players) {
+            if (player.id == username) {
+                myIndex = player.index
+                break
+            }
+        }
+    } else {
+        myIndex = myPlayer.index
+    }
+
+    let myPlayerOld = myPlayer
+    myPlayer = game.players[myIndex]
+
+    // my host status changed
+    if (!myPlayerOld || myPlayerOld.host != myPlayer.host) {
+        if (!myPlayer.host) {
+            igRobots.disabled = true;
+            igDoubleDeck.disabled = true;
+            igTeams.disabled = true;
+            igOregon.disabled = true;
+            disableButton(igStart);
+            disableButton(document.getElementById('igRandomizeTeams'));
+        } else {
+            igRobots.disabled = false;
+            igDoubleDeck.disabled = false;
+            igTeams.disabled = false;
+            igOregon.disabled = false;
+            enableButton(igStart);
+            enableButton(document.getElementById('igRandomizeTeams'));
+        }
+    }
+}
+
+function refreshGameCache() {
+    if (!game) {
+        return
+    }
+
+    if (gameCache.state != game.state) {
+        changeGameState(gameCache.state, game.state)
+        gameCache.state = game.state
+    }
+
+    if (gameCache.roundNumber != game.roundNumber) {
+        trickTaken = false
+        let round = game.rounds[game.roundNumber]
+        showOneCard = round.handSize > 1
+                    || myPlayer.index != round.dealer
+                    || myPlayer.kibitzer
+        if (!myPlayer.kibitzer) {
+            canvas.makeHandInteractables()
+        }
+        gameCache.roundNumber = game.roundNumber
+    }
+
+    if (gameCache.turn != game.turn) {
+        gameCache.turn = game.turn
+    }
+}
+
+function updateOptionsElements() {
+    if (!game || !('options' in game)) {
+        return
+    }
+
+    igKibitzer.checked = myPlayer !== undefined && myPlayer.kibitzer;
+
+    if (!myPlayer.host) {
+        igRobots.value = game.options.robots;
+        igDoubleDeck.checked = game.options.D == 2;
+        igTeams.checked = game.options.teams;
+        igOregon.checked = game.options.oregon;
+    }
+
+    document.getElementById('teamsDiv').style.display = game.options.teams ? 'inline' : 'none';
+}
+
+class UpdateCallbacks {
+    bid(data) {
+        if (data.path[1] == myPlayer.index && !myPlayer.kibitzer) {
+            pushBasicTimer(function () {
+                canvas.makeBidInteractables()
+            })
+        }
+    }
+
+    bidded(data) {
+        if (data.path[1] == myPlayer.index && !myPlayer.kibitzer) {
+            pushBasicTimer(function () {
+                canvas.removeBidInteractables()
+            })
+        }
+    }
+
+    allBid(data) {
+        animateBids()
+    }
+
+    play(data) {
+        if (data.path[1] == myPlayer.index && !myPlayer.kibitzer) {
+            pushBasicTimer(function () {
+                let decision = data.value[0]
+                if (decision.data.canPlay) {
+                    canPlay = decision.data.canPlay.map(c => c);
+                } else {
+                    canPlay = [];
+                }
+                if (preselected.length > 0) {
+                    let inter = canvas.cardInteractables[preselected[0]]
+                    if (canPlayThis(inter.card())) {
+                        playCard(inter);
+                        shiftPreselected();
+                    } else {
+                        clearPreselected(0);
+                    }
+                }
+            })
+        }
+    }
+
+    playReport(data) {
+        let index = data.path[1]
+        animatePlay(index)
+    }
+
+    trickWinner(data) {
+        let stayTe = new TimerEntry(trickStayTime);
+        stayTe.onLastAction = function () {
+            takenTimer = 0
+        }
+        canvas.pushTimerEntry(stayTe);
+    }
+
+    newTrickReset(data) {
+        let index = game.turn
+        pushBasicTimer(function () {
+            for (let seat of canvas.seats) {
+                seat.trickTimer = 0
+            }
+        })
+        animateTrickTake(index)
+    }
+
+    roundEnd(data) {
+        if (!myPlayer.kibitzer && game.mode == 'Oh Hell') {
+            showResultMessage();
+        }
+    }
+}
+
+// Saved games
 function download() {
     window.open(`${baseUrl}/cached_games/${autojoinId}.ohw`, 'Download');
 }
@@ -4546,7 +4691,7 @@ function openFile() {
           mode = data.mode;
           scoreWidth = 450;
           changeState(ClientState.IN_MULTIPLAYER_GAME);
-          changeGameState(GameState.POSTGAME);
+          changeGameState('POSTGAME');
           autojoinId = undefined;
           disableButton(document.getElementById('igLobby'));
           disableButton(document.getElementById('igDownload'));
@@ -4563,6 +4708,7 @@ function openFile() {
  */
 function setSocketCallbacks() {
     // In
+    socket.on('debug', data => console.log(data));
     socket.on('loginconfirmed', function () {
         changeState(ClientState.MAIN_MENU);
         if (autojoinId) {
@@ -4570,6 +4716,7 @@ function setSocketCallbacks() {
         }
     });
     socket.on('logoutconfirmed', () => {
+        setCookie('username', '', 0);
         changeState(ClientState.LOGIN_MENU);
     });
     socket.on('gamelist', data => {
@@ -4590,6 +4737,23 @@ function setSocketCallbacks() {
     socket.on('gamejoinerror', () => {
         document.location = baseUrl;
     });
+
+    socket.on('state', data => {
+        game = data
+        console.log(data, game)
+    });
+    socket.on('update', datas => {
+        console.log(datas, game)
+        for (let data of datas) {
+            pushBasicTimer(function () {
+                update(game, data)
+            }, data.robotDelay ? robotDelay : 0);
+            if ('keyword' in data && data.keyword in updateCallbacks) {
+                updateCallbacks[data.keyword](data)
+            }
+        }
+    });
+
     socket.on('options', function (data) {
         pushBasicTimer(function () {
             options.update(data);
@@ -4629,7 +4793,7 @@ function setSocketCallbacks() {
     });
     socket.on('removeplayers', function (data) {
         pushBasicTimer(function () {
-            players = players.filter(p => !data.indices.includes(p.getIndex()));
+            players = players.filter(p => !data.indices.includes(p.index));
             for (let i = 0; i < players.length; i++) {
                 players[i].setIndex(i);
             }
@@ -4697,35 +4861,35 @@ function setSocketCallbacks() {
             changeGameState(data.state);
 
             showOneCard = rounds[roundNumber].handSize > 1
-                || myPlayer.getIndex() != dealer
-                || data.state != GameState.BIDDING;
+                || myPlayer.index != dealer
+                || data.state != 'BIDDING';
 
-            if (data.state == GameState.BIDDING) {
-                if (turn == myPlayer.getIndex() && !myPlayer.isKibitzer()) {
+            if (data.state == 'BIDDING') {
+                if (turn == myPlayer.index && !myPlayer.kibitzer) {
                     canvas.makeBidInteractables();
                 }
-                for (const player of players) {
-                    player.setBidTimer(0);
+                for (const seat of canvas.seats) {
+                    seat.bidTimer = 0;
                 }
-            } else if (data.state == GameState.PLAYING) {
+            } else if (data.state == 'PLAYING') {
                 for (const player of players) {
                     player.setBidTimer(1);
-                    if (player.getTrick().isEmpty()) {
+                    if (isEmpty(player.trick)) {
                         player.setTrickTimer(0);
                     } else {
                         player.setTrickTimer(1);
                     }
                 }
-            } else if (data.state == GameState.PASSING) {
+            } else if (data.state == 'PASSING') {
                 pass = new Pass();
             }
 
             cardJustPlayed = undefined;
 
-            trickTaken = !players[0].getLastTrick().isEmpty();
+            trickTaken = !isEmpty(players[0].lastTrick);
             takenTimer = 1;
 
-            if (!myPlayer.isKibitzer()) {
+            if (!myPlayer.kibitzer) {
                 canvas.makeHandInteractables();
             }
 
@@ -4754,10 +4918,10 @@ function setSocketCallbacks() {
             trump = new Card(trump.num, trump.suit);
 
             showOneCard = data.hands[0].length > 1
-                        || myPlayer.getIndex() != dealer
-                        || myPlayer.isKibitzer();
+                        || myPlayer.index != dealer
+                        || myPlayer.kibitzer;
 
-            if (!myPlayer.isKibitzer()) {
+            if (!myPlayer.kibitzer) {
                 canvas.makeHandInteractables();
             }
         });
@@ -4775,7 +4939,7 @@ function setSocketCallbacks() {
                 players[i].setHand(data.hands[i].map(c => new Card(c.num, c.suit)));
             }
 
-            if (!myPlayer.isKibitzer()) {
+            if (!myPlayer.kibitzer) {
                 canvas.removeHandInteractables();
                 canvas.makeHandInteractables();
             }
@@ -4789,14 +4953,14 @@ function setSocketCallbacks() {
     });
     socket.on('bid', function (data) {
         pushBasicTimer(function () {
-            changeGameState(GameState.BIDDING);
+            changeGameState('BIDDING');
             turn = data.turn;
 
             if (data.ss) {
                 spreadsheetRow = data.ss;
             }
 
-            if (turn == myPlayer.getIndex() && !myPlayer.isKibitzer()) {
+            if (turn == myPlayer.index && !myPlayer.kibitzer) {
                 canvas.makeBidInteractables();
             } else {
                 canvas.removeBidInteractables();
@@ -4812,19 +4976,19 @@ function setSocketCallbacks() {
     });
     socket.on('play', function (data) {
         pushBasicTimer(function () {
-            changeGameState(GameState.PLAYING);
+            changeGameState('PLAYING');
             turn = data.turn;
 
             canvas.removeBidInteractables();
 
-            if (turn == myPlayer.getIndex()) {
+            if (turn == myPlayer.index) {
                 if (data.canPlay) {
                     canPlay = data.canPlay.map(c => new Card(c.num, c.suit));
                 } else {
                     canPlay = [];
                 }
                 if (preselected.length > 0) {
-                    if (canPlayThis(preselected[0].getCard())) {
+                    if (canPlayThis(preselected[0].card())) {
                         playCard(preselected[0]);
                         shiftPreselected();
                     } else {
@@ -4843,7 +5007,7 @@ function setSocketCallbacks() {
     });
     socket.on('pass', function (data) {
         pushBasicTimer(function () {
-            changeGameState(GameState.PASSING);
+            changeGameState('PASSING');
             turn = -1;
             pass = new Pass();
 
@@ -4856,7 +5020,7 @@ function setSocketCallbacks() {
         pushBasicTimer(function () {
             players[data.index].addBid(data.bid);
 
-            if (!players.some(p => !p.hasBid())) {
+            if (!players.some(p => !p.bidded)) {
                 animateBids();
             }
         }, !data.human ? robotDelay : 0);
@@ -4881,7 +5045,7 @@ function setSocketCallbacks() {
         animateTrickTake(data.index);
     });
     socket.on('scoresreport', function (data) {
-        if (!myPlayer.isKibitzer() && mode == 'Oh Hell') {
+        if (!myPlayer.kibitzer && mode == 'Oh Hell') {
             showResultMessage();
         }
         pushBasicTimer(function () {
@@ -4893,7 +5057,7 @@ function setSocketCallbacks() {
     });
     socket.on('postgame', function (data) {
         pushBasicTimer(function () {
-            changeGameState(GameState.POSTGAME);
+            changeGameState('POSTGAME');
             canvas.loadPostGame(data);
             enableButton(document.getElementById('igLobby'));
             enableButton(document.getElementById('igDownload'));
@@ -4944,7 +5108,6 @@ function connect(uname) {
 }
 function logout() {
     socket.emit('logout');
-    setCookie('username', '', 0);
 }
 
 function autojoin(uname, id) {
@@ -4963,7 +5126,17 @@ function goToModeSelect(mp) {
     changeState(ClientState.MODE_SELECT);
 }
 function createGame(mode) {
-    socket.emit('creategame', {mode: mode, multiplayer: multiplayer, options: options});
+    socket.emit(
+        'creategame',
+        {
+            mode: mode,
+            multiplayer: multiplayer,
+            commands: [{
+                name: 'updateOptions',
+                options: options
+            }]
+        }
+    );
 }
 function joinGame(id) {
     socket.emit('joingame', id);
@@ -4974,8 +5147,8 @@ function reloadWithId(id) {
 function goToGame() {
     scoreWidth = 0;
     changeState(ClientState.IN_MULTIPLAYER_GAME);
-    changeGameState(GameState.PREGAME);
-    myPlayer = undefined;
+    // changeGameState('PREGAME');
+    // myPlayer = undefined;
 }
 function leaveGame() {
     socket.emit('leavegame');
@@ -4989,22 +5162,38 @@ function requestEndGame() {
 }
 function sendPlayerUpdate() {
     socket.emit('player', {
-        id: myPlayer.getId(),
+        id: myPlayer.id,
         name: myPlayer.getName(),
-        kibitzer: myPlayer.isKibitzer()
+        kibitzer: myPlayer.kibitzer
     });
 }
-function sendOptionsUpdate() {
-    socket.emit('options', options);
+function sendCommand(data) {
+    socket.emit('command', data)
 }
 function makeBid(bid) {
-    socket.emit('bid', {bid: bid});
+    if (myPlayer.decisions.length == 0) {
+        return
+    }
+    let decision = myPlayer.decisions[myPlayer.decisions.length - 1]
+    if (decision.name != 'bid') {
+        return
+    }
+
+    sendCommand({name: decision.command, bid: bid})
     canvas.removeBidInteractables();
 }
 function playCard(canvasCard) {
-    cardJustPlayed = canvasCard.index();
-    let card = canvasCard.getCard();
-    socket.emit('play', {card: {num: card.num, suit: card.suit}});
+    if (myPlayer.decisions.length == 0) {
+        return
+    }
+    let decision = myPlayer.decisions[myPlayer.decisions.length - 1]
+    if (decision.name != 'play') {
+        return
+    }
+
+    cardJustPlayed = canvasCard.index
+    let card = canvasCard.card()
+    sendCommand({name: decision.command, play: card})
 }
 function makePass(cards) {
     socket.emit('pass', {cards: cards.map(c => c.toDict())});
@@ -5031,8 +5220,9 @@ function makeDecision(index) {
     socket.emit('decision', {name: decision.name, choice: index});
 }
 
-function reteam(index, team) {
-    socket.emit('reteam', {index: index, team: team});
+function reteam(index, number) {
+    sendCommand({name: 'reteam', index: index, number: number})
+    // socket.emit('reteam', {index: index, team: team});
 }
 function scrambleTeams() {
     socket.emit('scrambleteams');
@@ -5062,7 +5252,7 @@ function debugJoined() {
 }
 
 function debugAddPlayers() {
-    /*if (myPlayer.isKibitzer()) {
+    /*if (myPlayer.kibitzer) {
         return;
     }*/
 

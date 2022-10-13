@@ -6,6 +6,10 @@ var fs = require('fs');
 var ai = require('./ai');
 var ml = require('./ml');
 
+var cards = require('./cards')
+var players = require('./players')
+var ohHellCore = require('./modes/oh_hell')
+
 // App setup
 var app = express();
 var port = 6066;
@@ -18,23 +22,26 @@ app.use(express.static("public"));
 
 // Socket setup
 var io = socket(server);
-var userDict = {};
+var userDict = {} // socket id -> user
+var idUserDict = {} // user id -> user
 var gameDict = {};
 
 // constants
-var gameExpirationTime = 1000 * 10;
+var gameExpirationTime = 1000 * 10; // millisec
 var robotNames = fs.readFileSync('./misc/firstnames.txt', 'utf8').split('\r\n');
 
 function addUser(user, confirm) {
-    userDict[user.socket.id] = user;
+    userDict[user.socket.id] = user
+    idUserDict[user.id] = user
     if (confirm) {
-        user.confirmLogin();
+        user.confirmLogin()
     }
 }
 
 function removeUser(user) {
-    delete userDict[user.socket.id];
-    user.confirmLogout();
+    delete userDict[user.socket.id]
+    delete idUserDict[user.id]
+    user.confirmLogout()
 }
 
 function log(str) {
@@ -45,6 +52,12 @@ io.on("connection", function (socket) {
     log(`socket ${socket.id} connected at address ${socket.handshake.address}.`);
 
     socket.on("login", function (data) {
+        if (data.id in idUserDict) {
+            let user = idUserDict[data.id]
+            log(`kicked user ${user.id} at socket ${socket.id}.`)
+            removeUser(user)
+        }
+
         let user = new User(socket, data.id);
         addUser(user, true);
         log(`user ${user.id} at socket ${socket.id}.`);
@@ -57,7 +70,7 @@ io.on("connection", function (socket) {
             return;
         }
 
-        log("logout", user.id);
+        log(`user ${user.id} logged out.`);
         removeUser(user);
     });
     socket.on("disconnect", function () {
@@ -71,7 +84,7 @@ io.on("connection", function (socket) {
         log(`user ${user.id} disconnected.`);
 
         if (user.player) {
-            user.game.disconnectPlayer(user, false);
+            user.game.disconnectUser({user: user});
         }
         removeUser(user);
     });
@@ -95,9 +108,15 @@ io.on("connection", function (socket) {
             return;
         }
 
-        let game = new Game(data.mode, data.multiplayer, data.multiplayer);
-        if (data !== undefined && data.options !== undefined) {
-            game.core.updateOptions(data.options);
+        let game = createGame(data.mode, data.multiplayer, data.multiplayer);
+        // if (data !== undefined && data.options !== undefined) {
+        //     game.core.updateOptions(data.options);
+        // }
+
+        if ('commands' in data) {
+            for (const diff of data.commands) {
+                processCommand(user, game, diff)
+            }
         }
 
         gameDict[game.id] = game;
@@ -120,30 +139,29 @@ io.on("connection", function (socket) {
             return;
         }
 
-        game.joinPlayer(user);
+        processCommand(user, game, {name: 'joinUser', user: user})
 
         log(`${user.id} joined game ${game.id}.`);
     });
-    socket.on('leavegame', () => {
-        let user = userDict[socket.id];
-
-        if (user === undefined) {
-            log(`ERROR: socket ${socket.id} tried to leave game, but they are not in the user dict.`);
-            return;
-        }
-
-        let game = user.game;
-
-        if (game === undefined) {
-            log(`ERROR: user ${user.id} tried to join game, but they are not in a game.`);
-            return;
-        }
-
-        user.game.disconnectPlayer(user);
-
-        log(`${user.id} left game ${game.id}.`);
-    });
-
+    // socket.on('leavegame', () => {
+    //     let user = userDict[socket.id];
+    //
+    //     if (user === undefined) {
+    //         log(`ERROR: socket ${socket.id} tried to leave game, but they are not in the user dict.`);
+    //         return;
+    //     }
+    //
+    //     let game = user.game;
+    //
+    //     if (game === undefined) {
+    //         log(`ERROR: user ${user.id} tried to join game, but they are not in a game.`);
+    //         return;
+    //     }
+    //
+    //     user.game.disconnectUser(user);
+    //
+    //     log(`${user.id} left game ${game.id}.`);
+    // });
     socket.on('autojoin', data => {
         let user = new User(socket, data.userId);
         addUser(user, false);
@@ -155,10 +173,28 @@ io.on("connection", function (socket) {
             return;
         }
 
-        game.joinPlayer(user);
+        processCommand(user, game, {name: 'joinUser', user: user})
 
         log(`${user.id} joined game ${game.id}.`);
     });
+
+    socket.on('command', data => {
+        let user = userDict[socket.id]
+
+        if (!user) {
+            log(`ERROR: socket ${socket.id} tried to statediff, but they are not in the user dict.`)
+            return
+        }
+
+        let game = user.game
+
+        if (!user.game) {
+            log(`ERROR: user ${user.id} tried to statediff, but they are not in a game.`)
+            return
+        }
+
+        processCommand(user, game, data)
+    })
 
     socket.on('player', function (data) {
         let user = userDict[socket.id];
@@ -194,6 +230,7 @@ io.on("connection", function (socket) {
 
         game.core.updateOptions(data);
     });
+
     socket.on('start', function () {
         let user = userDict[socket.id];
 
@@ -228,6 +265,7 @@ io.on("connection", function (socket) {
 
         game.core.endGame(user.player.index);
     });
+
     socket.on('bid', function (data) {
         let user = userDict[socket.id];
 
@@ -402,7 +440,7 @@ io.on("connection", function (socket) {
         }
 
         game.core.reteam(user.player.index, data.index, data.team);
-    });
+    })
     socket.on('scrambleteams', function () {
         let user = userDict[socket.id];
 
@@ -422,6 +460,14 @@ io.on("connection", function (socket) {
     });
 });
 
+function processCommand(user, game, data) {
+    data.user = user
+    err = game.command(data)
+    if (err) {
+        log(`ERROR: from ${user.id}. ${err}`)
+    }
+}
+
 // User
 class User {
     constructor(socket, id) {
@@ -429,6 +475,14 @@ class User {
         this.id = id;
         this.player = undefined;
         this.game = undefined;
+    }
+
+    personalize(index) {
+        return {
+            socket: undefined,
+            player: undefined,
+            game: undefined
+        }
     }
 
     confirmLogin() {
@@ -444,12 +498,13 @@ class User {
     }
 
     advertise(game) {
-        this.socket.emit('gamecreated', game.toDict());
+        this.socket.emit('gamecreated', {mp: game.mp, id: game.id});
     }
 
     kick() {
         this.player = undefined;
         this.game = undefined;
+
 
         if (this.socket.connected) {
             this.socket.emit('kick');
@@ -459,16 +514,29 @@ class User {
     sendGameList() {
         let time = new Date().getTime();
         let expires = Object.values(gameDict).filter(g => g.shouldExpire(time));
-        expires.forEach(g => g.dispose());
+        expires.forEach(g => g.dispose(gameDict));
 
         let games = Object.values(gameDict).filter(g => g.public && g.listed);
         this.socket.emit('gamelist', {
-            games: games.map(g => g.toDict())
+            games: games.map(g => g.gameListEntry())
         });
     }
 }
 
 // Game
+function createGame(mode, mp, pub) {
+    let game = undefined
+    switch (mode) {
+        case 'Oh Hell':
+            game = new ohHellCore.OhHellCore(mode, mp, pub)
+            break
+        case 'Hearts':
+            game = new HeartsCore(mode, mp, pub)
+            break
+    }
+    return game
+}
+
 class Game {
     constructor(mode, mp, pub) {
         this.id = new Date().getTime();
@@ -476,12 +544,12 @@ class Game {
         this.mp = mp;
         this.public = pub;
         this.listed = false;
-        this.players = new PlayersList(this);
+        this.players = new players.PlayersList(this);
         this.host = undefined;
 
         switch (mode) {
             case 'Oh Hell':
-                this.core = new OhHellCore(this.players, this);
+                this.core = new ohHellCore.OhHellCore(this);
                 break;
             case 'Hearts':
                 this.core = new HeartsCore(this.players, this);
@@ -515,12 +583,17 @@ class Game {
         user.player = player;
         user.game = this;
 
-        player.commandJoin({mp: this.mp, id: this.id, mode: this.mode});
+        this.listed = true;
+
+        user.socket.emit('join', {id: this.id, mode: this.mode})
         this.players.addPlayer(player);
 
         this.players.updateOptions(this.core.options);
 
-        this.listed = true;
+        let pDatas = new Map()
+        pDatas.set(player, this.core)
+
+        this.players.emitState(pDatas)
     }
 
     disconnectPlayer(user, kick) {
@@ -545,11 +618,13 @@ class Game {
     }
 
     dispose() {
-        fs.unlink(this.jsonFilePath(), err => {
-            if (err) {
-                log(`ERROR: unable to remove ${this.jsonFilePath()}.`);
-            }
-        });
+        if (fs.existsSync(this.jsonFilePath())) {
+            fs.unlink(this.jsonFilePath(), err => {
+                if (err) {
+                    log(`ERROR: unable to remove ${this.jsonFilePath()}.`);
+                }
+            });
+        }
         delete gameDict[this.id];
     }
 
@@ -559,177 +634,180 @@ class Game {
 }
 
 // Card and Deck
-class Card {
-    constructor(num, suit) {
-        if (!arguments.length) {
-            this.num = 0;
-            this.suit = 0;
-        } else {
-            this.num = num;
-            this.suit = suit;
-        }
-    }
+// class Card {
+//     constructor(num, suit) {
+//         if (!arguments.length) {
+//             this.num = 0;
+//             this.suit = 0;
+//         } else {
+//             this.num = num;
+//             this.suit = suit;
+//         }
+//     }
+//
+//     toDict() {
+//         return {num: this.num, suit: this.suit};
+//     }
+//
+//     isEmpty() {
+//         return this.num == 0;
+//     }
+//
+//     toString() {
+//         if (this.isEmpty()) {
+//             return '0';
+//         }
+//
+//         let ans = '';
+//         if (this.num < 10) {
+//             ans += this.num;
+//         } else if (this.num == 10) {
+//             ans += 'T';
+//         } else if (this.num == 11) {
+//             ans += 'J';
+//         } else if (this.num == 12) {
+//             ans += 'Q';
+//         } else if (this.num == 13) {
+//             ans += 'K';
+//         } else if (this.num == 14) {
+//             ans += 'A';
+//         }
+//         if (this.suit == 0) {
+//             ans += 'C';
+//         } else if (this.suit == 1) {
+//             ans += 'D';
+//         } else if (this.suit == 2) {
+//             ans += 'S';
+//         } else if (this.suit == 3) {
+//             ans += 'H';
+//         }
+//
+//         return ans;
+//     }
+//
+//     fromString(str) {
+//         if (str[0] == 'T') {
+//             this.num = 10;
+//         } else if (str[0] == 'J') {
+//             this.num = 11;
+//         } else if (str[0] == 'Q') {
+//             this.num = 12;
+//         } else if (str[0] == 'K') {
+//             this.num = 13;
+//         } else if (str[0] == 'A') {
+//             this.num = 14;
+//         } else {
+//             this.num = parseInt(str[0]);
+//         }
+//
+//         if (str[1] == 'C') {
+//             this.suit = 0;
+//         } else if (str[1] == 'D') {
+//             this.suit = 1;
+//         } else if (str[1] == 'S') {
+//             this.suit = 2;
+//         } else if (str[1] == 'H') {
+//             this.suit = 3;
+//         }
+//
+//         return this;
+//     }
+//
+//     toNumber() {
+//         return this.num - 2 + 13 * this.suit;
+//     }
+//
+//     compSort(card) {
+//         if (this.suit == card.suit && this.num == card.num) {
+//             return 0;
+//         } else if (this.suit > card.suit || (this.suit == card.suit && this.num > card.num)) {
+//             return 1;
+//         } else {
+//             return -1;
+//         }
+//     }
+//
+//     comp(card, trump, led) {
+//         let thisVal = this.compHelperVal(trump, led);
+//         let cardVal = card.compHelperVal(trump, led);
+//         if (thisVal > cardVal) {
+//             return 1;
+//         } else if (thisVal == cardVal) {
+//             return 0;
+//         } else {
+//             return -1;
+//         }
+//     }
+//
+//     compHelperVal(trump, led) {
+//         let ans = this.num;
+//         if (this.suit == trump) {
+//             ans += 2000;
+//         } else if (this.suit == led) {
+//             ans += 1000;
+//         } else {
+//             return 0;
+//         }
+//         return ans;
+//     }
+//
+//     matches(card) {
+//         return this.num == card.num && this.suit == card.suit;
+//     }
+// }
+//
+// class Deck {
+//     constructor(D) {
+//         this.D = D;
+//     }
+//
+//     initialize() {
+//         this.deck = []
+//         for (let d = 1; d <= this.D; d++) {
+//             for (let suit = 0; suit < 4; suit++) {
+//                 for (let num = 2; num <= 14; num++) {
+//                     this.deck.push(new Card(num, suit));
+//                 }
+//             }
+//         }
+//     }
+//
+//     deal(N, h, trump) {
+//         let totalDealt = N * h;
+//         if (trump) {
+//             totalDealt++;
+//         }
+//
+//         if (totalDealt > 52 * this.D) {
+//             log('ERROR: tried to deal ' + h + ' cards to ' + N + ' players.');
+//         }
+//
+//         let out = [];
+//
+//         // Shuffle in place
+//         for (let i = this.deck.length - 1; i > 0; i--) {
+//             let j = Math.floor(Math.random() * i);
+//             let temp = this.deck[i];
+//             this.deck[i] = this.deck[j];
+//             this.deck[j] = temp;
+//         }
+//
+//         for (let i = 0; i < N; i++) {
+//             let hand = this.deck.slice(i * h, (i + 1) * h);
+//             hand.sort((c1, c2) => c1.compSort(c2));
+//             out.push(hand);
+//         }
+//
+//         if (trump) {
+//             out.push([this.deck[h * N]]);
+//         }
+//
+//         return out;
+//     }
+// }
 
-    toDict() {
-        return {num: this.num, suit: this.suit};
-    }
-
-    isEmpty() {
-        return this.num == 0;
-    }
-
-    toString() {
-        if (this.isEmpty()) {
-            return '0';
-        }
-
-        let ans = '';
-        if (this.num < 10) {
-            ans += this.num;
-        } else if (this.num == 10) {
-            ans += 'T';
-        } else if (this.num == 11) {
-            ans += 'J';
-        } else if (this.num == 12) {
-            ans += 'Q';
-        } else if (this.num == 13) {
-            ans += 'K';
-        } else if (this.num == 14) {
-            ans += 'A';
-        }
-        if (this.suit == 0) {
-            ans += 'C';
-        } else if (this.suit == 1) {
-            ans += 'D';
-        } else if (this.suit == 2) {
-            ans += 'S';
-        } else if (this.suit == 3) {
-            ans += 'H';
-        }
-
-        return ans;
-    }
-
-    fromString(str) {
-        if (str[0] == 'T') {
-            this.num = 10;
-        } else if (str[0] == 'J') {
-            this.num = 11;
-        } else if (str[0] == 'Q') {
-            this.num = 12;
-        } else if (str[0] == 'K') {
-            this.num = 13;
-        } else if (str[0] == 'A') {
-            this.num = 14;
-        } else {
-            this.num = parseInt(str[0]);
-        }
-
-        if (str[1] == 'C') {
-            this.suit = 0;
-        } else if (str[1] == 'D') {
-            this.suit = 1;
-        } else if (str[1] == 'S') {
-            this.suit = 2;
-        } else if (str[1] == 'H') {
-            this.suit = 3;
-        }
-
-        return this;
-    }
-
-    toNumber() {
-        return this.num - 2 + 13 * this.suit;
-    }
-
-    compSort(card) {
-        if (this.suit == card.suit && this.num == card.num) {
-            return 0;
-        } else if (this.suit > card.suit || (this.suit == card.suit && this.num > card.num)) {
-            return 1;
-        } else {
-            return -1;
-        }
-    }
-
-    comp(card, trump, led) {
-        let thisVal = this.compHelperVal(trump, led);
-        let cardVal = card.compHelperVal(trump, led);
-        if (thisVal > cardVal) {
-            return 1;
-        } else if (thisVal == cardVal) {
-            return 0;
-        } else {
-            return -1;
-        }
-    }
-
-    compHelperVal(trump, led) {
-        let ans = this.num;
-        if (this.suit == trump) {
-            ans += 2000;
-        } else if (this.suit == led) {
-            ans += 1000;
-        } else {
-            return 0;
-        }
-        return ans;
-    }
-
-    matches(card) {
-        return this.num == card.num && this.suit == card.suit;
-    }
-}
-
-class Deck {
-    constructor(D) {
-        this.D = D;
-    }
-
-    initialize() {
-        this.deck = []
-        for (let d = 1; d <= this.D; d++) {
-            for (let suit = 0; suit < 4; suit++) {
-                for (let num = 2; num <= 14; num++) {
-                    this.deck.push(new Card(num, suit));
-                }
-            }
-        }
-    }
-
-    deal(N, h, trump) {
-        let totalDealt = N * h;
-        if (trump) {
-            totalDealt++;
-        }
-
-        if (totalDealt > 52 * this.D) {
-            log('ERROR: tried to deal ' + h + ' cards to ' + N + ' players.');
-        }
-
-        let out = [];
-
-        // Shuffle in place
-        for (let i = this.deck.length - 1; i > 0; i--) {
-            let j = Math.floor(Math.random() * i);
-            let temp = this.deck[i];
-            this.deck[i] = this.deck[j];
-            this.deck[j] = temp;
-        }
-
-        for (let i = 0; i < N; i++) {
-            let hand = this.deck.slice(i * h, (i + 1) * h);
-            hand.sort((c1, c2) => c1.compSort(c2));
-            out.push(hand);
-        }
-
-        if (trump) {
-            out.push([this.deck[h * N]]);
-        }
-
-        return out;
-    }
-}
+Card = cards.Card
+Deck = cards.Deck
 
 // Player
 class Player {
