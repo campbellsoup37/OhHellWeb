@@ -23,7 +23,7 @@ var gameDict = {};
 
 // constants
 var gameExpirationTime = 1000 * 10;
-var robotNames = fs.readFileSync('./misc/firstnames.txt', 'utf8').split('\r\n');
+var robotNames = fs.readFileSync('./misc/firstnames.txt', 'utf8').replace('\r', '').split('\n');
 
 function addUser(user, confirm) {
     userDict[user.socket.id] = user;
